@@ -81,8 +81,9 @@ byte-for-byte identical output.
    19.5in x 11in bed this yields a **5 x 13 grid (65 tags per sheet)**; overflow
    rows spill onto `output_2.svg`, `output_3.svg`, …
 4. **Individual mode** substitutes the placeholders across the whole template and
-   writes one file per row, named after a chosen field (`--name-field`, defaulting
-   to the first matched field). Filenames are sanitised and de-duplicated
+   writes one file per row, named after chosen fields (`--name-field`). Templates
+   containing both `NAME` and `DATE` default to `Name - Date.svg`; other templates
+   default to the first matched field. Filenames are sanitised and de-duplicated
    (`Ada Lovelace.svg`, `Ada Lovelace-2.svg`, …). The output is byte-for-byte the
    template with its tokens replaced — no re-serialisation.
 
@@ -129,7 +130,8 @@ python mailmerge.py [options]
 
   Individual mode:
   --out-dir DIR       Folder for the per-row SVGs (default: output)
-  --name-field FIELD  Template field used to name each file (default: first matched field)
+  --name-field FIELDS Comma-separated template fields used to name each file
+                      (default: NAME + DATE when present; otherwise first matched field)
 ```
 
 Examples:

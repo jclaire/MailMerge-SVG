@@ -528,16 +528,22 @@ def generate_individual(svg_text, names_csv_path, out_dir="output", name_field=N
             f"placeholders {template_fields}. CSV columns: {fieldnames}."
         )
 
-    # Pick which column names each output file. Default to the first matched
-    # template field; fall back to a row number when the value is blank.
-    nf = (name_field or "").strip().lower()
-    if nf and nf not in header_set:
+    # Use an explicit comma-separated field list when supplied. Otherwise,
+    # certificates with both NAME and DATE use both; other templates retain
+    # the first-matched-field default.
+    name_fields = [
+        field.strip().lower()
+        for field in (name_field or "").split(",")
+        if field.strip()
+    ]
+    invalid_name_fields = [field for field in name_fields if field not in header_set]
+    if invalid_name_fields:
         raise ValueError(
-            f"--name-field {name_field!r} is not a CSV column. "
+            f"--name-field contains unknown CSV column(s): {invalid_name_fields}. "
             f"Available columns: {fieldnames}."
         )
-    if not nf:
-        nf = matched[0]
+    if not name_fields:
+        name_fields = ["name", "date"] if "name" in matched and "date" in matched else [matched[0]]
 
     os.makedirs(out_dir, exist_ok=True)
     missing = set()
@@ -553,7 +559,9 @@ def generate_individual(svg_text, names_csv_path, out_dir="output", name_field=N
                 value = ""
             body = body.replace(raw, xml_escape_text(value))
 
-        base = sanitize_filename(row.get(nf, "")) or f"row-{i + 1}"
+        base = sanitize_filename(
+            " - ".join(row.get(field, "") for field in name_fields if row.get(field, ""))
+        ) or f"row-{i + 1}"
         out_name = os.path.join(out_dir, unique_name(base, used) + ".svg")
         with open(out_name, "w", encoding="utf-8") as fh:
             fh.write(body)
@@ -565,7 +573,8 @@ def generate_individual(svg_text, names_csv_path, out_dir="output", name_field=N
         "matched": matched,
         "unmatched": sorted(unmatched),
         "csv_columns": fieldnames,
-        "name_field": nf,
+        "name_field": ",".join(name_fields),
+        "name_fields": name_fields,
         "out_dir": out_dir,
         "names": len(data_rows),
         "files": written,
@@ -588,8 +597,8 @@ def main(argv=None):
     parser.add_argument("--out-dir", default="output",
                         help="[individual] Directory for the per-row SVGs (default: output)")
     parser.add_argument("--name-field", default=None,
-                        help="[individual] CSV column used to name each output file "
-                             "(default: the template's first field)")
+                        help="[individual] CSV column(s), comma-separated, used to name each output file "
+                             "(default: NAME and DATE when both exist; otherwise the first matched field)")
     parser.add_argument("--gap", type=float, default=2.0, help="[grid] Gap between tiles in mm (default: 2.0)")
     parser.add_argument("--margin", type=float, default=0.0, help="[grid] Margin around the grid in mm (default: 0.0)")
     args = parser.parse_args(argv)
@@ -624,7 +633,7 @@ def main(argv=None):
         for name, count in result["files"]:
             print(f"  {name}: {count} tile(s)")
     else:
-        print(f"Mode: individual  (file name from '{result['name_field']}')")
+        print(f"Mode: individual  (file name from {' + '.join(result['name_fields'])})")
         print(f"Records: {result['names']}  ->  {len(result['files'])} file(s) in {result['out_dir']}/")
         shown = result["files"][:10]
         for name, _ in shown:

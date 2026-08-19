@@ -417,6 +417,12 @@ function makeTagCopy(xml, row, tokens, index, tx, ty, missing) {
 function sanitizeFilename(v) {
   return (v || "").replace(/[<>:"/\\|?*\x00-\x1f]/g, "_").trim().replace(/[. ]+$/, "");
 }
+function resolveNameFields(value, matched, headerSet) {
+  const requested = String(value || "").split(",").map((f) => f.trim().toLowerCase()).filter(Boolean);
+  if (requested.length && requested.every((f) => headerSet.has(f))) return requested;
+  if (matched.includes("name") && matched.includes("date")) return ["name", "date"];
+  return [matched[0]];
+}
 function uniqueName(base, used) {
   let name = base, n = 2;
   while (used.has(name.toLowerCase())) { name = base + "-" + n; n++; }
@@ -515,9 +521,8 @@ function generateIndividual(svgText, csvText, opts) {
     throw new Error("CSV columns [" + fields.join(", ") + "] do not match any template field [" +
                     templateFields.join(", ") + "].");
 
-  let nameField = (opts.nameField || "").trim().toLowerCase();
-  if (nameField && !headerSet.has(nameField)) nameField = "";
-  if (!nameField) nameField = matched[0];
+  const nameFields = resolveNameFields(opts.nameField, matched, headerSet);
+  const nameField = nameFields.join(",");
 
   const missing = new Set();
   const used = new Set();
@@ -530,7 +535,8 @@ function generateIndividual(svgText, csvText, opts) {
       else { missing.add(field); value = ""; }
       body = body.split(raw).join(xmlEscape(value));
     }
-    const base = sanitizeFilename(row[nameField] || "") || ("row-" + (i + 1));
+    const base = sanitizeFilename(nameFields.map((field) => row[field] || "").filter(Boolean).join(" - ")) ||
+                 ("row-" + (i + 1));
     const name = uniqueName(base, used);
     items.push({ name: name + ".svg", svg: body, label: name, count: 1 });
   });
@@ -538,7 +544,7 @@ function generateIndividual(svgText, csvText, opts) {
   return {
     mode: "individual", items, sheets: items,
     fields: templateFields, matched, unmatched: [...unmatched].sort(), csvColumns: fields,
-    nameField, records: dataRows.length,
+    nameField, nameFields, records: dataRows.length,
   };
 }
 
@@ -641,9 +647,12 @@ function effectiveMode() {
 function populateNameField(res) {
   const sel = $("nameField");
   const prev = sel.value;
-  const opts = (res.matched.length ? res.matched : res.fields);
-  sel.innerHTML = opts.map((f) => `<option value="${f}">${f}</option>`).join("");
-  sel.value = opts.includes(prev) ? prev : res.nameField;
+  const fields = (res.matched.length ? res.matched : res.fields);
+  const opts = fields.includes("name") && fields.includes("date")
+    ? [{ value: "name,date", label: "name + date" }, ...fields.map((f) => ({ value: f, label: f }))]
+    : fields.map((f) => ({ value: f, label: f }));
+  sel.innerHTML = opts.map((o) => `<option value="${o.value}">${o.label}</option>`).join("");
+  sel.value = opts.some((o) => o.value === prev) ? prev : res.nameField;
 }
 
 /* ---------------- data table (in-memory CRUD) ----------------------------- */
@@ -1023,7 +1032,7 @@ function renderInfo(res) {
     info.innerHTML =
       `<div class="line"><span class="k">Mode</span><span class="v">Individual — one file per row</span></div>` +
       `<div class="line"><span class="k">Records</span><span class="v">${res.records} → ${res.items.length} file(s)</span></div>` +
-      `<div class="line"><span class="k">Name by</span><span class="v">${res.nameField}</span></div>` +
+      `<div class="line"><span class="k">Name by</span><span class="v">${res.nameFields.join(" + ")}</span></div>` +
       `<div class="line"><span class="k">Fields</span><span class="v">${fieldPills}</span></div>`;
   }
 }
