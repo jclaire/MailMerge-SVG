@@ -10,7 +10,9 @@ Two output modes:
 - ``grid`` -- the template carries a single repeating tile (a ``<g>`` labelled
   ``Nametag``/``Tile``/``Cell`` containing a ``... Border`` cut shape). The tile
   is copied once per row and tiled into a grid sized to fit a laser bed
-  (e.g. a Glowforge Pro, 19.5in x 11in) with a small gap between cuts. Ideal for
+  (e.g. a Glowforge Pro, 19.5in x 11in) with a small gap between cuts. The gap
+  can differ horizontally and vertically, and the page margin can differ on
+  each side, so a sheet can register to an asymmetric die-cut layout. Ideal for
   nametags, labels and other many-up cut sheets.
 - ``individual`` -- the whole template page is one document (a certificate,
   diploma, badge, ...). One output SVG is written per CSV row.
@@ -280,17 +282,70 @@ def _shape_bbox(tag_name, el):
 
 # --- grid layout ------------------------------------------------------------
 
-def compute_grid(page_w, page_h, tag_w, tag_h, stroke, gap, margin):
-    """Compute how many columns/rows of tags fit on the bed."""
-    pitch_x = tag_w + gap
-    pitch_y = tag_h + gap
-    avail_w = page_w - stroke - 2 * margin
-    avail_h = page_h - stroke - 2 * margin
+# User units. Keeps an exact die-cut fit (pitch * n + margins == page) from
+# rounding down to one fewer row or column. Far smaller than a print dot.
+_FIT_EPS = 1e-4
 
-    cols = int((avail_w - tag_w) / pitch_x) + 1 if avail_w >= tag_w else 0
-    rows = int((avail_h - tag_h) / pitch_y) + 1 if avail_h >= tag_h else 0
-    cols = max(cols, 1)
-    rows = max(rows, 1)
+
+def _pick_spacing(specific, fallback):
+    """Use ``specific`` when it was provided, otherwise the shared fallback.
+
+    ``0`` is a real value (a flush gutter or a flush edge). Only ``None`` means
+    "not set"."""
+    return fallback if specific is None else specific
+
+
+def resolve_grid_spacing(gap, margin, gap_x=None, gap_y=None,
+                         margin_top=None, margin_right=None,
+                         margin_bottom=None, margin_left=None):
+    """Resolve per-axis gaps and per-side margins.
+
+    ``gap`` applies to both axes unless ``gap_x`` or ``gap_y`` is set.
+    ``margin`` applies to every side unless that side is set. All six numbers
+    are in the same unit (millimetres at the CLI; user units in the layout).
+    """
+    return {
+        "gap_x": _pick_spacing(gap_x, gap),
+        "gap_y": _pick_spacing(gap_y, gap),
+        "margin_top": _pick_spacing(margin_top, margin),
+        "margin_right": _pick_spacing(margin_right, margin),
+        "margin_bottom": _pick_spacing(margin_bottom, margin),
+        "margin_left": _pick_spacing(margin_left, margin),
+    }
+
+
+def _slots(avail, size, pitch):
+    """How many tiles of ``size`` fit in ``avail`` stepped by ``pitch``."""
+    if pitch <= 0:
+        return 1 if avail + _FIT_EPS >= size else 0
+    if avail + _FIT_EPS < size:
+        return 0
+    return int((avail - size + _FIT_EPS) / pitch) + 1
+
+
+def compute_grid(page_w, page_h, tag_w, tag_h, stroke, gap, margin,
+                 gap_x=None, gap_y=None,
+                 margin_top=None, margin_right=None,
+                 margin_bottom=None, margin_left=None):
+    """Compute how many columns/rows of tags fit on the page.
+
+    ``gap`` is the space between tiles on both axes and ``margin`` is the
+    inset on every side, matching the original single-value behaviour. Pass
+    ``gap_x`` / ``gap_y`` or a side margin to override one axis or edge.
+    """
+    spacing = resolve_grid_spacing(
+        gap, margin,
+        gap_x=gap_x, gap_y=gap_y,
+        margin_top=margin_top, margin_right=margin_right,
+        margin_bottom=margin_bottom, margin_left=margin_left,
+    )
+    pitch_x = tag_w + spacing["gap_x"]
+    pitch_y = tag_h + spacing["gap_y"]
+    avail_w = page_w - stroke - spacing["margin_left"] - spacing["margin_right"]
+    avail_h = page_h - stroke - spacing["margin_top"] - spacing["margin_bottom"]
+
+    cols = max(_slots(avail_w, tag_w, pitch_x), 1)
+    rows = max(_slots(avail_h, tag_h, pitch_y), 1)
     return cols, rows, pitch_x, pitch_y
 
 
@@ -395,11 +450,20 @@ def match_fields(tokens, fieldnames):
 
 
 def generate(template_path, names_csv_path, output_path="output.svg", mode="auto",
-             gap=2.0, margin=0.0, out_dir="output", name_field=None):
+             gap=2.0, margin=0.0, out_dir="output", name_field=None,
+             gap_x=None, gap_y=None,
+             margin_top=None, margin_bottom=None,
+             margin_left=None, margin_right=None):
     """Dispatch to the grid or individual generator.
 
     ``mode`` is ``"auto"`` (choose based on whether the template has a tile
-    group), ``"grid"`` or ``"individual"``."""
+    group), ``"grid"`` or ``"individual"``.
+
+    In grid mode ``gap`` (mm) is the space between tiles on both axes and
+    ``margin`` (mm) is the inset on every side. ``gap_x`` / ``gap_y`` and
+    ``margin_top`` / ``margin_bottom`` / ``margin_left`` / ``margin_right``
+    override one axis or side; leave them unset to keep the shared value.
+    """
     with open(template_path, encoding="utf-8") as fh:
         svg_text = fh.read()
 
@@ -415,11 +479,19 @@ def generate(template_path, names_csv_path, output_path="output.svg", mode="auto
                 f"{', '.join(TILE_LABELS)} (e.g. inkscape:label=\"Nametag\"). "
                 "Use individual mode for whole-page templates."
             )
-        return generate_grid(svg_text, tile, names_csv_path, output_path, gap, margin)
+        return generate_grid(
+            svg_text, tile, names_csv_path, output_path, gap, margin,
+            gap_x=gap_x, gap_y=gap_y,
+            margin_top=margin_top, margin_bottom=margin_bottom,
+            margin_left=margin_left, margin_right=margin_right,
+        )
     return generate_individual(svg_text, names_csv_path, out_dir, name_field)
 
 
-def generate_grid(svg_text, tile, names_csv_path, output_path, gap=2.0, margin=0.0):
+def generate_grid(svg_text, tile, names_csv_path, output_path, gap=2.0, margin=0.0,
+                  gap_x=None, gap_y=None,
+                  margin_top=None, margin_bottom=None,
+                  margin_left=None, margin_right=None):
     start, end, tile_label = tile
     prefix = svg_text[:start]
     suffix = svg_text[end:]
@@ -436,15 +508,28 @@ def generate_grid(svg_text, tile, names_csv_path, output_path, gap=2.0, margin=0
     page_w, page_h, uu_per_mm = parse_page(svg_text)
     tag_w, tag_h, stroke = parse_tag_geometry(nametag_xml, border_labels)
 
-    # ``gap`` and ``margin`` arrive in millimetres; convert them into the
-    # template's user units so spacing is physically correct on any template.
-    # If the template declares no absolute size, treat the values as user units.
+    # Spacing arrives in millimetres. Convert into the template's user units so
+    # a millimetre is a real millimetre on any template. If the template
+    # declares no absolute size, treat the values as user units.
+    # A single gap or margin still fills both axes or every side; an explicit
+    # per-axis gap or per-side margin replaces only that one.
     scale = uu_per_mm if uu_per_mm else 1.0
-    gap_uu = gap * scale
-    margin_uu = margin * scale
+    spacing_mm = resolve_grid_spacing(
+        gap, margin,
+        gap_x=gap_x, gap_y=gap_y,
+        margin_top=margin_top, margin_right=margin_right,
+        margin_bottom=margin_bottom, margin_left=margin_left,
+    )
+    spacing = {key: value * scale for key, value in spacing_mm.items()}
 
     cols, rows, pitch_x, pitch_y = compute_grid(
-        page_w, page_h, tag_w, tag_h, stroke, gap_uu, margin_uu
+        page_w, page_h, tag_w, tag_h, stroke,
+        spacing["gap_x"], spacing["margin_top"],
+        gap_x=spacing["gap_x"], gap_y=spacing["gap_y"],
+        margin_top=spacing["margin_top"],
+        margin_right=spacing["margin_right"],
+        margin_bottom=spacing["margin_bottom"],
+        margin_left=spacing["margin_left"],
     )
     per_page = cols * rows
 
@@ -468,8 +553,8 @@ def generate_grid(svg_text, tile, names_csv_path, output_path, gap=2.0, margin=0
         for i, data_row in enumerate(chunk):
             col = i % cols
             grid_row = i // cols
-            tx = margin_uu + col * pitch_x
-            ty = margin_uu + grid_row * pitch_y
+            tx = spacing["margin_left"] + col * pitch_x
+            ty = spacing["margin_top"] + grid_row * pitch_y
             copies.append(make_tag_copy(nametag_xml, data_row, tokens, i, tx, ty, missing))
 
         out_svg = prefix + "".join(copies) + suffix
@@ -500,6 +585,7 @@ def generate_grid(svg_text, tile, names_csv_path, output_path, gap=2.0, margin=0
         "page_size_in": page_size_in,
         "tag_size_in": tag_size_in,
         "grid": (cols, rows),
+        "spacing_mm": spacing_mm,
         "per_page": per_page,
         "names": len(data_rows),
         "files": written,
@@ -599,14 +685,33 @@ def main(argv=None):
     parser.add_argument("--name-field", default=None,
                         help="[individual] CSV column(s), comma-separated, used to name each output file "
                              "(default: NAME and DATE when both exist; otherwise the first matched field)")
-    parser.add_argument("--gap", type=float, default=2.0, help="[grid] Gap between tiles in mm (default: 2.0)")
-    parser.add_argument("--margin", type=float, default=0.0, help="[grid] Margin around the grid in mm (default: 0.0)")
+    parser.add_argument("--gap", type=float, default=2.0,
+                        help="[grid] Gap between tiles in mm, both axes (default: 2.0). "
+                             "Overridden per axis by --gap-x / --gap-y.")
+    parser.add_argument("--gap-x", type=float, default=None,
+                        help="[grid] Horizontal gap between columns in mm (default: --gap)")
+    parser.add_argument("--gap-y", type=float, default=None,
+                        help="[grid] Vertical gap between rows in mm (default: --gap)")
+    parser.add_argument("--margin", type=float, default=0.0,
+                        help="[grid] Margin on every side in mm (default: 0.0). "
+                             "Overridden per side by --margin-top/bottom/left/right.")
+    parser.add_argument("--margin-top", type=float, default=None,
+                        help="[grid] Top page margin in mm (default: --margin)")
+    parser.add_argument("--margin-bottom", type=float, default=None,
+                        help="[grid] Bottom page margin in mm (default: --margin)")
+    parser.add_argument("--margin-left", type=float, default=None,
+                        help="[grid] Left page margin in mm (default: --margin)")
+    parser.add_argument("--margin-right", type=float, default=None,
+                        help="[grid] Right page margin in mm (default: --margin)")
     args = parser.parse_args(argv)
 
     try:
         result = generate(
             args.template, args.names, args.output, mode=args.mode,
             gap=args.gap, margin=args.margin,
+            gap_x=args.gap_x, gap_y=args.gap_y,
+            margin_top=args.margin_top, margin_bottom=args.margin_bottom,
+            margin_left=args.margin_left, margin_right=args.margin_right,
             out_dir=args.out_dir, name_field=args.name_field,
         )
     except (ValueError, FileNotFoundError) as exc:
@@ -628,7 +733,21 @@ def main(argv=None):
             pw, ph = result["page_size_uu"]
             tw, th = result["tag_size_uu"]
             print(f"Bed: {pw:g} x {ph:g} (user units)   Tile: {tw:g} x {th:g} (user units)")
+        sp = result["spacing_mm"]
+        if sp["gap_x"] == sp["gap_y"]:
+            gap_txt = f"gap {sp['gap_x']:g} mm"
+        else:
+            gap_txt = f"gap-x {sp['gap_x']:g} mm, gap-y {sp['gap_y']:g} mm"
+        sides = (sp["margin_top"], sp["margin_right"], sp["margin_bottom"], sp["margin_left"])
+        if len(set(sides)) == 1:
+            margin_txt = f"margin {sides[0]:g} mm"
+        else:
+            margin_txt = (
+                f"margin T {sp['margin_top']:g} / R {sp['margin_right']:g} / "
+                f"B {sp['margin_bottom']:g} / L {sp['margin_left']:g} mm"
+            )
         print(f"Grid: {cols} cols x {rows} rows = {result['per_page']} per sheet")
+        print(f"Spacing: {gap_txt}; {margin_txt}")
         print(f"Records: {result['names']}  ->  {len(result['files'])} sheet(s)")
         for name, count in result["files"]:
             print(f"  {name}: {count} tile(s)")
