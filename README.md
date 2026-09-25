@@ -1,5 +1,9 @@
 # MailMerge-SVG
 
+Fork of [joncamp/MailMerge-SVG](https://github.com/joncamp/MailMerge-SVG) (MIT).
+The browser app for this fork is at
+<https://jclaire.github.io/MailMerge-SVG/>.
+
 Mail-merge data from a CSV onto an SVG template and produce ready-to-use output in
 one of two layouts:
 
@@ -56,7 +60,7 @@ pick the mode, preview the result, and download a single file or all of them as 
 - **GitHub Pages (free hosting)** — the included workflow
   ([`.github/workflows/pages.yml`](.github/workflows/pages.yml)) publishes it on
   every push to `main`. Enable **Settings → Pages → Source: GitHub Actions** once;
-  the app is then live at `https://joncamp.github.io/MailMerge-SVG/`.
+  the app is then live at `https://jclaire.github.io/MailMerge-SVG/`.
 - **Gist** — paste `index.html` into a public [gist](https://gist.github.com) and
   open it through `https://htmlpreview.github.io/?<raw-gist-url>`.
 
