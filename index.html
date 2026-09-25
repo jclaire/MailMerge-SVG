@@ -118,6 +118,7 @@
   .field label.toggle { display: flex; align-items: center; gap: 8px; cursor: pointer; }
   .field label.toggle input { width: auto; margin: 0; }
   .hint-note { color: var(--muted); font-size: 12px; margin-top: 4px; }
+  #gridOpts .hint-note { margin: -4px 0 12px; }
 </style>
 </head>
 <body>
@@ -156,14 +157,47 @@
       </select>
     </div>
 
-    <div class="row" id="gridOpts">
-      <div class="field">
-        <label>Gap (mm)</label>
-        <input type="number" id="gap" value="2" min="0" step="0.5">
+    <div id="gridOpts">
+      <div class="row">
+        <div class="field">
+          <label for="gap">Gap (mm)</label>
+          <input type="number" id="gap" value="2" min="0" step="any">
+        </div>
+        <div class="field">
+          <label for="margin">Margin (mm)</label>
+          <input type="number" id="margin" value="0" min="0" step="any">
+        </div>
       </div>
-      <div class="field">
-        <label>Margin (mm)</label>
-        <input type="number" id="margin" value="0" min="0" step="0.5">
+      <p class="hint-note">Gap sets both axes and Margin sets every side. Override one axis or side below. All values are millimetres.</p>
+      <div class="row">
+        <div class="field">
+          <label for="gapX">Gap X (mm)</label>
+          <input type="number" id="gapX" value="2" min="0" step="any">
+        </div>
+        <div class="field">
+          <label for="gapY">Gap Y (mm)</label>
+          <input type="number" id="gapY" value="2" min="0" step="any">
+        </div>
+      </div>
+      <div class="row">
+        <div class="field">
+          <label for="marginTop">Margin top (mm)</label>
+          <input type="number" id="marginTop" value="0" min="0" step="any">
+        </div>
+        <div class="field">
+          <label for="marginBottom">Margin bottom (mm)</label>
+          <input type="number" id="marginBottom" value="0" min="0" step="any">
+        </div>
+      </div>
+      <div class="row">
+        <div class="field">
+          <label for="marginLeft">Margin left (mm)</label>
+          <input type="number" id="marginLeft" value="0" min="0" step="any">
+        </div>
+        <div class="field">
+          <label for="marginRight">Margin right (mm)</label>
+          <input type="number" id="marginRight" value="0" min="0" step="any">
+        </div>
       </div>
     </div>
 
@@ -352,13 +386,43 @@ function parseTagGeometry(xml, borderLabels) {
   return { w, h, stroke };
 }
 
-function computeGrid(pw, ph, tw, th, stroke, gap, margin) {
-  const pitchX = tw + gap, pitchY = th + gap;
-  const availW = pw - stroke - 2*margin, availH = ph - stroke - 2*margin;
-  let cols = availW >= tw ? Math.floor((availW - tw) / pitchX) + 1 : 0;
-  let rows = availH >= th ? Math.floor((availH - th) / pitchY) + 1 : 0;
-  cols = Math.max(cols, 1); rows = Math.max(rows, 1);
-  return { cols, rows, pitchX, pitchY };
+// User units. Keeps an exact die-cut fit from rounding down a row or column.
+const FIT_EPS = 1e-4;
+
+function optNum(value, fallback) {
+  if (value == null || value === "") return fallback;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+// gap fills both axes and margin fills every side unless an override is set.
+// 0 is a real gutter or edge; only null/"" means "use the shared value".
+function resolveSpacing(gap, margin, overrides) {
+  const o = overrides || {};
+  return {
+    gapX: optNum(o.gapX, gap),
+    gapY: optNum(o.gapY, gap),
+    marginTop: optNum(o.marginTop, margin),
+    marginRight: optNum(o.marginRight, margin),
+    marginBottom: optNum(o.marginBottom, margin),
+    marginLeft: optNum(o.marginLeft, margin),
+  };
+}
+
+function slots(avail, size, pitch) {
+  if (pitch <= 0) return (avail + FIT_EPS >= size) ? 1 : 0;
+  if (avail + FIT_EPS < size) return 0;
+  return Math.floor((avail - size + FIT_EPS) / pitch) + 1;
+}
+
+function computeGrid(pw, ph, tw, th, stroke, gap, margin, overrides) {
+  const spacing = resolveSpacing(gap, margin, overrides);
+  const pitchX = tw + spacing.gapX, pitchY = th + spacing.gapY;
+  const availW = pw - stroke - spacing.marginLeft - spacing.marginRight;
+  const availH = ph - stroke - spacing.marginTop - spacing.marginBottom;
+  const cols = Math.max(slots(availW, tw, pitchX), 1);
+  const rows = Math.max(slots(availH, th, pitchY), 1);
+  return { cols, rows, pitchX, pitchY, spacing };
 }
 
 function detectPlaceholders(xml) {
@@ -453,7 +517,13 @@ function generate(svgText, csvText, opts) {
 }
 
 function generateGrid(svgText, tile, csvText, opts) {
-  const gapMm = opts.gapMm ?? 2, marginMm = opts.marginMm ?? 0;
+  opts = opts || {};
+  const gapMm = optNum(opts.gapMm, 2), marginMm = optNum(opts.marginMm, 0);
+  const spacingMm = resolveSpacing(gapMm, marginMm, {
+    gapX: opts.gapXMm, gapY: opts.gapYMm,
+    marginTop: opts.marginTopMm, marginRight: opts.marginRightMm,
+    marginBottom: opts.marginBottomMm, marginLeft: opts.marginLeftMm,
+  });
   const { start, end, label: tileLabel } = tile;
   const prefix = svgText.slice(0, start), suffix = svgText.slice(end);
   const nametagXml = svgText.slice(start, end);
@@ -466,8 +536,13 @@ function generateGrid(svgText, tile, csvText, opts) {
   const { vbW, vbH, uuPerMm } = parsePage(svgText);
   const { w: tagW, h: tagH, stroke } = parseTagGeometry(nametagXml, borderLabels);
   const scale = uuPerMm || 1;
-  const gap = gapMm * scale, margin = marginMm * scale;
-  const { cols, rows, pitchX, pitchY } = computeGrid(vbW, vbH, tagW, tagH, stroke, gap, margin);
+  const spacing = {
+    gapX: spacingMm.gapX * scale, gapY: spacingMm.gapY * scale,
+    marginTop: spacingMm.marginTop * scale, marginRight: spacingMm.marginRight * scale,
+    marginBottom: spacingMm.marginBottom * scale, marginLeft: spacingMm.marginLeft * scale,
+  };
+  const { cols, rows, pitchX, pitchY, spacing: placed } = computeGrid(
+    vbW, vbH, tagW, tagH, stroke, spacing.gapX, spacing.marginTop, spacing);
   const perPage = cols * rows;
 
   const { fields, rows: dataRows } = parseCSV(csvText);
@@ -486,7 +561,7 @@ function generateGrid(svgText, tile, csvText, opts) {
     let copies = "";
     chunk.forEach((dr, i) => {
       const col = i % cols, gr = Math.floor(i / cols);
-      const tx = margin + col * pitchX, ty = margin + gr * pitchY;
+      const tx = placed.marginLeft + col * pitchX, ty = placed.marginTop + gr * pitchY;
       copies += makeTagCopy(nametagXml, dr, tokens, i, tx, ty, missing);
     });
     items.push({
@@ -505,6 +580,7 @@ function generateGrid(svgText, tile, csvText, opts) {
     tagSizeIn: mmPerUu ? [tagW * mmPerUu / 25.4, tagH * mmPerUu / 25.4] : null,
     pageSizeIn: mmPerUu ? [vbW * mmPerUu / 25.4, vbH * mmPerUu / 25.4] : null,
     tagSizeUu: [tagW, tagH], pageSizeUu: [vbW, vbH],
+    spacingMm,
   };
 }
 
@@ -981,12 +1057,11 @@ function regenerate() {
     updateBackdropUI();
     return;
   }
-  const gapMm = parseFloat($("gap").value) || 0;
-  const marginMm = parseFloat($("margin").value) || 0;
+  const spacing = readSpacing();
   const nameField = $("nameField").value || null;
   let res;
   try {
-    res = generate(state.tpl, dataToCsv(state.data), { mode, gapMm, marginMm, nameField });
+    res = generate(state.tpl, dataToCsv(state.data), Object.assign({ mode, nameField }, spacing));
   } catch (err) {
     state.result = null;
     showMessage("err", "⚠ " + err.message);
@@ -1026,6 +1101,7 @@ function renderInfo(res) {
       `<div class="line"><span class="k">Bed</span><span class="v">${bed}</span></div>` +
       `<div class="line"><span class="k">Tile</span><span class="v">${tag}</span></div>` +
       `<div class="line"><span class="k">Grid</span><span class="v">${res.grid.cols} × ${res.grid.rows} = ${res.perPage}/sheet</span></div>` +
+      `<div class="line"><span class="k">Spacing</span><span class="v">${formatSpacing(res.spacingMm)}</span></div>` +
       `<div class="line"><span class="k">Records</span><span class="v">${res.records} → ${res.items.length} sheet(s)</span></div>` +
       `<div class="line"><span class="k">Fields</span><span class="v">${fieldPills}</span></div>`;
   } else {
@@ -1179,8 +1255,56 @@ function downloadAll() {
 
 wireDrop("tplDrop", "tplInput", (t) => { state.tpl = t; maybeInitColumnsFromTemplate(); }, "tplName");
 wireDrop("csvDrop", "csvInput", (t) => { loadCsvIntoModel(t); }, "csvName");
-$("gap").addEventListener("input", regenerate);
-$("margin").addEventListener("input", regenerate);
+function numOrBlank(raw, fallback) {
+  if (raw == null || String(raw).trim() === "") return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : fallback;
+}
+function readSpacing() {
+  const gapMm = numOrBlank($("gap").value, 2);
+  const marginMm = numOrBlank($("margin").value, 0);
+  return {
+    gapMm, marginMm,
+    gapXMm: numOrBlank($("gapX").value, gapMm),
+    gapYMm: numOrBlank($("gapY").value, gapMm),
+    marginTopMm: numOrBlank($("marginTop").value, marginMm),
+    marginBottomMm: numOrBlank($("marginBottom").value, marginMm),
+    marginLeftMm: numOrBlank($("marginLeft").value, marginMm),
+    marginRightMm: numOrBlank($("marginRight").value, marginMm),
+  };
+}
+function fmtMm(n) {
+  const rounded = Math.round(n * 10000) / 10000;
+  return String(rounded);
+}
+function formatSpacing(sp) {
+  if (!sp) return "";
+  const gaps = sp.gapX === sp.gapY
+    ? "gap " + fmtMm(sp.gapX) + " mm"
+    : "X " + fmtMm(sp.gapX) + " · Y " + fmtMm(sp.gapY) + " mm";
+  const sides = [sp.marginTop, sp.marginRight, sp.marginBottom, sp.marginLeft];
+  const margins = sides.every((v) => v === sides[0])
+    ? "margin " + fmtMm(sides[0]) + " mm"
+    : "T " + fmtMm(sp.marginTop) + " · R " + fmtMm(sp.marginRight) +
+      " · B " + fmtMm(sp.marginBottom) + " · L " + fmtMm(sp.marginLeft) + " mm";
+  return gaps + "; " + margins;
+}
+function syncGapAxes() {
+  $("gapX").value = $("gap").value;
+  $("gapY").value = $("gap").value;
+}
+function syncMarginSides() {
+  const v = $("margin").value;
+  $("marginTop").value = v;
+  $("marginRight").value = v;
+  $("marginBottom").value = v;
+  $("marginLeft").value = v;
+}
+$("gap").addEventListener("input", () => { syncGapAxes(); regenerate(); });
+$("margin").addEventListener("input", () => { syncMarginSides(); regenerate(); });
+["gapX", "gapY", "marginTop", "marginRight", "marginBottom", "marginLeft"].forEach((id) => {
+  $(id).addEventListener("input", regenerate);
+});
 $("mode").addEventListener("change", () => { updateModeUI(effectiveMode()); regenerate(); });
 $("nameField").addEventListener("change", regenerate);
 $("backdropToggle").addEventListener("change", (e) => { state.showBackdrop = e.target.checked; refreshPreview(); });

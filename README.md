@@ -93,12 +93,15 @@ size.
 
 **Any template size or unit works.** The template's page is reproduced exactly —
 the same `viewBox`, `width`, `height` and surrounding markup are kept verbatim, so
-the output is dimensionally identical to the input. In grid mode `--gap` and
-`--margin` are given in millimetres and converted to the template's own coordinate
-system using its declared physical `width`/`height`, so a 2&nbsp;mm gap is a real
+the output is dimensionally identical to the input. In grid mode spacing is
+given in millimetres and converted to the template's own coordinate system
+using its declared physical `width`/`height`, so a 2&nbsp;mm gap is a real
 2&nbsp;mm gap whether the template is authored in millimetres, inches, points or
-pixels. (If a template declares no absolute size, `--gap`/`--margin` are
-interpreted directly in user units.)
+pixels. `--gap` sets both axes and `--margin` sets every side. `--gap-x` /
+`--gap-y` and `--margin-top` / `--margin-right` / `--margin-bottom` /
+`--margin-left` override one axis or side (a value of `0` is kept; omitting the
+flag keeps the shared value). (If a template declares no absolute size, the
+spacing values are interpreted directly in user units.)
 
 The template is treated as read-only and is never modified.
 
@@ -125,8 +128,14 @@ python mailmerge.py [options]
 
   Grid mode:
   --output PATH       Output SVG; extra sheets get _2, _3 suffixes (default: output.svg)
-  --gap MM            Gap between tiles in millimetres (default: 2.0)
-  --margin MM         Margin around the grid in millimetres (default: 0.0)
+  --gap MM            Gap between tiles in millimetres, both axes (default: 2.0)
+  --gap-x MM          Horizontal gap between columns in millimetres (default: --gap)
+  --gap-y MM          Vertical gap between rows in millimetres (default: --gap)
+  --margin MM         Margin on every side in millimetres (default: 0.0)
+  --margin-top MM     Top page margin in millimetres (default: --margin)
+  --margin-bottom MM  Bottom page margin in millimetres (default: --margin)
+  --margin-left MM    Left page margin in millimetres (default: --margin)
+  --margin-right MM   Right page margin in millimetres (default: --margin)
 
   Individual mode:
   --out-dir DIR       Folder for the per-row SVGs (default: output)
@@ -137,8 +146,12 @@ python mailmerge.py [options]
 Examples:
 
 ```bash
-# Wider spacing and a 5mm margin around the grid sheet
+# Wider spacing and a 5mm margin on every side
 python mailmerge.py --gap 4 --margin 5
+
+# Same result, written out per axis and per side
+python mailmerge.py --gap-x 4 --gap-y 4 \
+  --margin-top 5 --margin-bottom 5 --margin-left 5 --margin-right 5
 
 # A different grid shape + its CSV
 python mailmerge.py --template samples/05-hexagon.svg --names samples/05-hexagon.csv --output hex.svg
@@ -149,6 +162,54 @@ python mailmerge.py --template samples/certificate.svg --names samples/certifica
 
 # Force a mode (e.g. emit individual files from a template that also has a tile)
 python mailmerge.py --mode individual --out-dir out
+```
+
+## Letter label sheets
+
+Grid mode can register a tile to a die-cut Letter sheet. Size the template page
+to US Letter (215.9&nbsp;mm × 279.4&nbsp;mm, or 8.5&nbsp;in × 11&nbsp;in) and
+size the tile border to the label. Give that border no stroke
+(`stroke-width: 0`); a stroke is subtracted from the usable page and will shift
+the grid. Print the SVG at **100% / actual size** — do not scale to fit.
+
+Millimetre values below are the usual inch die layouts converted with
+25.4&nbsp;mm/in. The single `--margin` / `--gap` flags still work; these
+examples need the per-side and per-axis overrides. In the browser, **Gap (mm)**
+and **Margin (mm)** copy into both axes and all four sides; edit **Gap X**,
+**Gap Y**, **Margin top**, **Margin bottom**, **Margin left**, or **Margin
+right** to override one of them.
+
+| Sheet | Grid | Label (tile border) | Margins (mm): top, right, bottom, left | Gaps (mm): X, Y |
+| --- | --- | --- | --- | --- |
+| Avery 5520 (same layout as 1&nbsp;in × 2⅝&nbsp;in, 30-up) | 3 × 10 | 66.675 × 25.4 | 12.7, 4.7625, 12.7, 4.7625 | 3.175, 0 |
+| Avery 5195 (1.75&nbsp;in × 0.666&nbsp;in, 60-up) | 4 × 15 | 44.45 × 16.9164 | 13.4874, 9.144, 12.1666, 7.5438 | 7.1374, 0 |
+| Avery 5523 (4&nbsp;in × 2&nbsp;in, 10-up) | 2 × 5 | 101.6 × 50.8 | 12.7, 4.318, 12.7, 4.318 | 4.064, 0 |
+
+5520 side margins are 0.1875&nbsp;in (often rounded to 0.188&nbsp;in) and the
+horizontal gutter is 0.125&nbsp;in; rows are flush (vertical pitch equals the
+1&nbsp;in label). 5195 is asymmetric: top 0.531&nbsp;in, right 0.36&nbsp;in,
+bottom 0.479&nbsp;in, left 0.297&nbsp;in, horizontal pitch 2.031&nbsp;in
+(gutter 0.281&nbsp;in), vertical pitch 0.666&nbsp;in. 5523 uses 0.5&nbsp;in
+top and bottom, 0.17&nbsp;in sides, and a 0.16&nbsp;in horizontal gutter.
+
+```bash
+# Avery 5520 on US Letter. The template tile must already be 66.675 mm x 25.4 mm.
+python mailmerge.py --template letter-label.svg --names names.csv --output labels.svg \
+  --margin-top 12.7 --margin-bottom 12.7 \
+  --margin-left 4.7625 --margin-right 4.7625 \
+  --gap-x 3.175 --gap-y 0
+
+# Avery 5195 — unequal left/right and top/bottom margins
+python mailmerge.py --template letter-label.svg --names names.csv --output labels.svg \
+  --margin-top 13.4874 --margin-bottom 12.1666 \
+  --margin-left 7.5438 --margin-right 9.144 \
+  --gap-x 7.1374 --gap-y 0
+
+# Avery 5523
+python mailmerge.py --template letter-label.svg --names names.csv --output labels.svg \
+  --margin-top 12.7 --margin-bottom 12.7 \
+  --margin-left 4.318 --margin-right 4.318 \
+  --gap-x 4.064 --gap-y 0
 ```
 
 ## Files
@@ -180,8 +241,9 @@ python mailmerge.py --mode individual --out-dir out
 
 - The root `<svg>` must have a `viewBox`. Its `width`/`height` (in any absolute
   unit — mm, in, pt, px…) define the physical size; in grid mode the grid and the
-  `--gap`/`--margin` spacing adapt to it automatically. The page is otherwise
-  reproduced exactly in the output.
+  spacing flags (`--gap`, `--gap-x`, `--gap-y`, `--margin`, and the four side
+  margins) adapt to it automatically. The page is otherwise reproduced exactly
+  in the output.
 
 ---
 
