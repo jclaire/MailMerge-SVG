@@ -124,7 +124,7 @@
 <body>
 <header>
   <h1>MailMerge&#8209;SVG</h1>
-  <p>Mail-merge a CSV onto an SVG template — tile it into a laser-ready grid, or make one page per row (certificates, badges). All in your browser; nothing is uploaded.</p>
+  <p>Mail-merge a CSV onto an SVG template — tile it into a laser-ready grid, print a full sheet of each label, or make one page per row (certificates, badges). All in your browser; nothing is uploaded.</p>
 </header>
 <main>
   <div class="panel" id="controls">
@@ -153,6 +153,7 @@
       <select id="mode" style="width:100%">
         <option value="auto">Auto-detect</option>
         <option value="grid">Grid (tiled, laser cut)</option>
+        <option value="fullsheet">One full sheet per label</option>
         <option value="individual">One file per row (certificates)</option>
       </select>
     </div>
@@ -204,6 +205,7 @@
     <div class="field" id="indivOpts" style="display:none">
       <label>Name files by</label>
       <select id="nameField" style="width:100%"></select>
+      <div class="hint-note" id="nameHint"></div>
     </div>
 
     <div class="field" id="backdropOpts" style="display:none">
@@ -257,13 +259,13 @@
   </div>
 </main>
 <footer>
-  Tip: for <strong>grid</strong> mode the template needs a tile group labelled <code>inkscape:label="Nametag"</code>
-  (or <code>Tile</code>/<code>Cell</code>) with a cut outline labelled <code>Border</code> (or <code>Nametag Border</code>). For
+  Tip: for <strong>grid</strong> and <strong>one full sheet per label</strong> the template needs a tile group labelled <code>inkscape:label="Nametag"</code>
+  (or <code>Tile</code>/<code>Cell</code>) with a cut outline labelled <code>Border</code> (or <code>Nametag Border</code>). Full-sheet mode fills every cell with one row and downloads a PDF per row (or all of them as a zip). For
   <strong>individual</strong> mode any whole-page SVG works. Either way, put <code>{{TOKEN}}</code> placeholders in the
   artwork and CSV column names are matched to them automatically. For certificates, add a hidden Inkscape layer labelled
   <code>Backdrop</code> (e.g. an image of the pre-printed stock) to preview alignment — it's shown only on screen, never in downloads.
   Use the zoom controls (or <code>Ctrl</code>/<code>⌘</code> + scroll over the preview) to inspect detail; <strong>Fit</strong> resets to the full view.
-  Host this file free on GitHub Pages, a gist (via htmlpreview), or anywhere static.
+  Host this file free on GitHub Pages, a gist (via htmlpreview), or anywhere static. Print sheets at 100% / actual size.
 </footer>
 
 <script>
@@ -506,17 +508,21 @@ function generate(svgText, csvText, opts) {
   const mode = opts.mode || "auto";
   const tile = findTileGroup(svgText);
   const resolved = mode === "auto" ? (tile ? "grid" : "individual") : mode;
-  if (resolved === "grid") {
+  if (resolved === "grid" || resolved === "fullsheet") {
     if (!tile)
-      throw new Error("Grid mode needs a repeating tile group labelled one of " +
+      throw new Error((resolved === "fullsheet" ? "One full sheet per label" : "Grid mode") +
+                      " needs a repeating tile group labelled one of " +
                       TILE_LABELS.join(", ") + ' (e.g. inkscape:label="Nametag"). ' +
                       "Use individual mode for whole-page templates.");
-    return generateGrid(svgText, tile, csvText, opts);
+    return resolved === "fullsheet"
+      ? generateFullSheet(svgText, tile, csvText, opts)
+      : generateGrid(svgText, tile, csvText, opts);
   }
   return generateIndividual(svgText, csvText, opts);
 }
 
-function generateGrid(svgText, tile, csvText, opts) {
+// Sheet geometry shared by grid mode and one-full-sheet-per-label mode.
+function prepareGrid(svgText, tile, opts) {
   opts = opts || {};
   const gapMm = optNum(opts.gapMm, 2), marginMm = optNum(opts.marginMm, 0);
   const spacingMm = resolveSpacing(gapMm, marginMm, {
@@ -541,47 +547,107 @@ function generateGrid(svgText, tile, csvText, opts) {
     marginTop: spacingMm.marginTop * scale, marginRight: spacingMm.marginRight * scale,
     marginBottom: spacingMm.marginBottom * scale, marginLeft: spacingMm.marginLeft * scale,
   };
-  const { cols, rows, pitchX, pitchY, spacing: placed } = computeGrid(
-    vbW, vbH, tagW, tagH, stroke, spacing.gapX, spacing.marginTop, spacing);
-  const perPage = cols * rows;
+  const grid = computeGrid(vbW, vbH, tagW, tagH, stroke, spacing.gapX, spacing.marginTop, spacing);
+  const mmPerUu = uuPerMm ? 1 / uuPerMm : null;
+  return {
+    prefix, suffix, nametagXml, tokens, spacingMm,
+    cols: grid.cols, rows: grid.rows, pitchX: grid.pitchX, pitchY: grid.pitchY,
+    placed: grid.spacing, perPage: grid.cols * grid.rows,
+    vbW, vbH, tagW, tagH,
+    tagSizeIn: mmPerUu ? [tagW * mmPerUu / 25.4, tagH * mmPerUu / 25.4] : null,
+    pageSizeIn: mmPerUu ? [vbW * mmPerUu / 25.4, vbH * mmPerUu / 25.4] : null,
+  };
+}
 
+function sheetSvg(prep, cellRows, missing) {
+  let copies = "";
+  cellRows.forEach((dr, i) => {
+    const col = i % prep.cols, gr = Math.floor(i / prep.cols);
+    const tx = prep.placed.marginLeft + col * prep.pitchX;
+    const ty = prep.placed.marginTop + gr * prep.pitchY;
+    copies += makeTagCopy(prep.nametagXml, dr, prep.tokens, i, tx, ty, missing);
+  });
+  return prep.prefix + copies + prep.suffix;
+}
+
+function gridResult(prep, templateFields, matched, unmatched, fields, items, records) {
+  return {
+    items, sheets: items,
+    fields: templateFields, matched, unmatched: [...unmatched].sort(), csvColumns: fields,
+    grid: { cols: prep.cols, rows: prep.rows }, perPage: prep.perPage, records,
+    tagSizeIn: prep.tagSizeIn, pageSizeIn: prep.pageSizeIn,
+    tagSizeUu: [prep.tagW, prep.tagH], pageSizeUu: [prep.vbW, prep.vbH],
+    spacingMm: prep.spacingMm,
+  };
+}
+
+function generateGrid(svgText, tile, csvText, opts) {
+  const prep = prepareGrid(svgText, tile, opts);
   const { fields, rows: dataRows } = parseCSV(csvText);
   if (!dataRows.length) throw new Error("No data rows found in the CSV.");
 
-  const { templateFields, matched, unmatched } = matchFields(tokens, fields);
+  const { templateFields, matched, unmatched } = matchFields(prep.tokens, fields);
   if (!matched.length)
     throw new Error("CSV columns [" + fields.join(", ") + "] do not match any template field [" +
                     templateFields.join(", ") + "].");
 
   const missing = new Set();
-  const totalPages = Math.max(1, Math.ceil(dataRows.length / perPage));
+  const totalPages = Math.max(1, Math.ceil(dataRows.length / prep.perPage));
   const items = [];
   for (let p = 0; p < totalPages; p++) {
-    const chunk = dataRows.slice(p * perPage, (p + 1) * perPage);
-    let copies = "";
-    chunk.forEach((dr, i) => {
-      const col = i % cols, gr = Math.floor(i / cols);
-      const tx = placed.marginLeft + col * pitchX, ty = placed.marginTop + gr * pitchY;
-      copies += makeTagCopy(nametagXml, dr, tokens, i, tx, ty, missing);
-    });
+    const chunk = dataRows.slice(p * prep.perPage, (p + 1) * prep.perPage);
     items.push({
       name: p === 0 ? "output.svg" : "output_" + (p + 1) + ".svg",
-      svg: prefix + copies + suffix,
+      svg: sheetSvg(prep, chunk, missing),
       label: "Sheet " + (p + 1),
       count: chunk.length,
     });
   }
 
-  const mmPerUu = uuPerMm ? 1 / uuPerMm : null;
-  return {
-    mode: "grid", items, sheets: items,
-    fields: templateFields, matched, unmatched: [...unmatched].sort(), csvColumns: fields,
-    grid: { cols, rows }, perPage, records: dataRows.length,
-    tagSizeIn: mmPerUu ? [tagW * mmPerUu / 25.4, tagH * mmPerUu / 25.4] : null,
-    pageSizeIn: mmPerUu ? [vbW * mmPerUu / 25.4, vbH * mmPerUu / 25.4] : null,
-    tagSizeUu: [tagW, tagH], pageSizeUu: [vbW, vbH],
-    spacingMm,
-  };
+  return Object.assign({ mode: "grid" }, gridResult(
+    prep, templateFields, matched, unmatched, fields, items, dataRows.length));
+}
+
+// "{fields}-{row}" with the row number zero-padded so a folder sorts in order.
+function fullsheetBasename(row, nameFields, index, count) {
+  const label = sanitizeFilename(nameFields.map((field) => row[field] || "").filter(Boolean).join(" - "));
+  const width = Math.max(2, String(count).length);
+  return (label || "row") + "-" + String(index + 1).padStart(width, "0");
+}
+
+function generateFullSheet(svgText, tile, csvText, opts) {
+  opts = opts || {};
+  const prep = prepareGrid(svgText, tile, opts);
+  const { fields, rows: dataRows } = parseCSV(csvText);
+  if (!dataRows.length) throw new Error("No data rows found in the CSV.");
+
+  const { templateFields, matched, unmatched, headerSet } = matchFields(prep.tokens, fields);
+  if (!matched.length)
+    throw new Error("CSV columns [" + fields.join(", ") + "] do not match any template field [" +
+                    templateFields.join(", ") + "].");
+
+  const nameFields = resolveNameFields(opts.nameField, matched, headerSet);
+  const missing = new Set();
+  const used = new Set();
+  const items = [];
+  dataRows.forEach((row, i) => {
+    const cells = [];
+    for (let n = 0; n < prep.perPage; n++) cells.push(row);
+    const base = fullsheetBasename(row, nameFields, i, dataRows.length);
+    const name = uniqueName(base, used);
+    items.push({
+      name: name + ".pdf",
+      svg: sheetSvg(prep, cells, missing),
+      label: name,
+      count: prep.perPage,
+    });
+  });
+
+  return Object.assign({
+    mode: "fullsheet",
+    nameField: nameFields.join(","),
+    nameFields,
+  }, gridResult(prep, templateFields, matched, unmatched, fields, items, dataRows.length));
 }
 
 function generateIndividual(svgText, csvText, opts) {
@@ -677,7 +743,7 @@ Bob Johnson,Scribe`;
 
 /* ---------------- UI wiring ------------------------------------------------ */
 
-const state = { tpl: null, data: { columns: [], rows: [] }, result: null, current: 0, showBackdrop: true, zoom: 1 };
+const state = { tpl: null, data: { columns: [], rows: [] }, result: null, current: 0, showBackdrop: true, zoom: 1, exporting: false };
 const $ = (id) => document.getElementById(id);
 
 function wireDrop(dropId, inputId, onLoad, nameId) {
@@ -705,8 +771,15 @@ function showMessage(kind, text) {
 
 function updateModeUI(mode) {
   const indiv = mode === "individual";
+  const named = indiv || mode === "fullsheet";
   $("gridOpts").style.display = indiv ? "none" : "";
-  $("indivOpts").style.display = indiv ? "" : "none";
+  $("indivOpts").style.display = named ? "" : "none";
+  const hint = $("nameHint");
+  if (hint) {
+    hint.textContent = mode === "fullsheet"
+      ? "Each PDF is named from this field plus the row number (for example Amoxicillin-01.pdf). The same name on another row stays a separate file."
+      : "Each file is named from this field.";
+  }
   syncRowSelectable();
 }
 
@@ -867,7 +940,7 @@ function itemIndexForRow(ri) {
 
 // In individual (certificate) mode, clicking a row number previews that row.
 function selectRowPreview(ri) {
-  if (!state.result || state.result.mode !== "individual") return;
+  if (!state.result || (state.result.mode !== "individual" && state.result.mode !== "fullsheet")) return;
   const idx = itemIndexForRow(ri);
   if (idx < 0 || idx >= state.result.items.length) return;
   state.current = idx;
@@ -884,8 +957,8 @@ function selectRowPreview(ri) {
 function syncRowSelectable() {
   const t = $("dataArea").querySelector("table.data");
   if (!t) return;
-  const indiv = !!(state.result && state.result.mode === "individual");
-  t.classList.toggle("rowselect", indiv);
+  const pick = !!(state.result && (state.result.mode === "individual" || state.result.mode === "fullsheet"));
+  t.classList.toggle("rowselect", pick);
 }
 
 function renderDataEditor() {
@@ -925,7 +998,7 @@ function renderDataEditor() {
 
   let tbody = "";
   rows.forEach((r, ri) => {
-    tbody += '<tr><td class="idxcol" data-row="' + ri + '" title="Preview this row (certificate mode)">' + (ri + 1) + "</td>";
+    tbody += '<tr><td class="idxcol" data-row="' + ri + '" title="Preview this row">' + (ri + 1) + "</td>";
     columns.forEach((_, ci) => {
       tbody += '<td><input data-row="' + ri + '" data-cell="' + ci + '" value="' + esc(r[ci] || "") + '" spellcheck="false"></td>';
     });
@@ -960,10 +1033,16 @@ function renderDataEditor() {
   syncDataButtons();
 }
 
+function setDownloadLabels(mode) {
+  $("dlOneBtn").textContent = mode === "fullsheet" ? "Download PDF" : "Download";
+  $("dlAllBtn").textContent = mode === "fullsheet" ? "All PDFs (.zip)" : "Download all (.zip)";
+}
+
 function clearOutputs(hint) {
   state.result = null; state.current = 0;
   $("info").style.display = "none";
   $("dlOneBtn").disabled = true; $("dlAllBtn").disabled = true;
+  setDownloadLabels("");
   $("sheetSelect").style.display = "none";
   $("stage").innerHTML = '<div class="empty">' + (hint || "Nothing to preview yet.") + "</div>";
 }
@@ -1050,6 +1129,7 @@ function regenerate() {
     state.result = null; state.current = 0;
     $("info").style.display = "none";
     $("dlOneBtn").disabled = true; $("dlAllBtn").disabled = true;
+    setDownloadLabels("");
     $("sheetSelect").style.display = "none";
     showSvgInStage(applyBackdrop(state.tpl, state.showBackdrop));
     showMessage("hint", "Previewing the template. Add a data row below (or upload a CSV) to merge your data.");
@@ -1067,6 +1147,7 @@ function regenerate() {
     showMessage("err", "⚠ " + err.message);
     $("info").style.display = "none";
     $("dlOneBtn").disabled = true; $("dlAllBtn").disabled = true;
+    setDownloadLabels("");
     $("sheetSelect").style.display = "none";
     updateModeUI(effectiveMode());
     updateBackdropUI();
@@ -1074,7 +1155,8 @@ function regenerate() {
   }
   state.result = res; state.current = 0;
   updateModeUI(res.mode);
-  if (res.mode === "individual") populateNameField(res);
+  setDownloadLabels(res.mode);
+  if (res.mode === "individual" || res.mode === "fullsheet") populateNameField(res);
   if (res.unmatched.length)
     showMessage("warn", "Template fields with no data column (left blank): " + res.unmatched.join(", "));
   else
@@ -1092,17 +1174,26 @@ function renderInfo(res) {
     `<span class="pill ${res.matched.includes(f) ? "ok" : "warn"}">${f}${res.matched.includes(f) ? "" : " ✕"}</span>`
   ).join("");
   info.style.display = "block";
-  if (res.mode === "grid") {
+  if (res.mode === "grid" || res.mode === "fullsheet") {
     const tag = res.tagSizeIn ? res.tagSizeIn.map((v) => v.toFixed(2) + "in").join(" × ")
                               : res.tagSizeUu.map((v) => (+v.toFixed(2)) + "uu").join(" × ");
     const bed = res.pageSizeIn ? res.pageSizeIn.map((v) => v.toFixed(2) + "in").join(" × ")
                               : res.pageSizeUu.map((v) => (+v.toFixed(2)) + "uu").join(" × ");
+    const per = res.mode === "fullsheet" ? " copies/sheet" : "/sheet";
+    const records = res.mode === "fullsheet"
+      ? `${res.records} → ${res.items.length} PDF(s)`
+      : `${res.records} → ${res.items.length} sheet(s)`;
+    const extra = res.mode === "fullsheet"
+      ? `<div class="line"><span class="k">Mode</span><span class="v">One full sheet per label</span></div>` +
+        `<div class="line"><span class="k">Name by</span><span class="v">${res.nameFields.join(" + ")} + row</span></div>`
+      : "";
     info.innerHTML =
+      extra +
       `<div class="line"><span class="k">Bed</span><span class="v">${bed}</span></div>` +
       `<div class="line"><span class="k">Tile</span><span class="v">${tag}</span></div>` +
-      `<div class="line"><span class="k">Grid</span><span class="v">${res.grid.cols} × ${res.grid.rows} = ${res.perPage}/sheet</span></div>` +
+      `<div class="line"><span class="k">Grid</span><span class="v">${res.grid.cols} × ${res.grid.rows} = ${res.perPage}${per}</span></div>` +
       `<div class="line"><span class="k">Spacing</span><span class="v">${formatSpacing(res.spacingMm)}</span></div>` +
-      `<div class="line"><span class="k">Records</span><span class="v">${res.records} → ${res.items.length} sheet(s)</span></div>` +
+      `<div class="line"><span class="k">Records</span><span class="v">${records}</span></div>` +
       `<div class="line"><span class="k">Fields</span><span class="v">${fieldPills}</span></div>`;
   } else {
     info.innerHTML =
@@ -1121,7 +1212,9 @@ function renderItemSelect(res) {
   sel.innerHTML = res.items.map((it, i) => {
     const txt = res.mode === "grid"
       ? `Sheet ${i + 1} / ${total} — ${it.count} tags`
-      : `${i + 1} / ${total} — ${it.label}`;
+      : res.mode === "fullsheet"
+        ? `${i + 1} / ${total} — ${it.label} (${it.count} copies)`
+        : `${i + 1} / ${total} — ${it.label}`;
     return `<option value="${i}">${txt}</option>`;
   }).join("");
   sel.value = String(state.current);
@@ -1201,11 +1294,170 @@ function renderPreview() {
   showSvgInStage(applyBackdrop(item.svg, state.showBackdrop));
   const a = $("dlOne");
   // Downloads never include the backdrop — it's only an on-screen alignment aid.
-  a.href = URL.createObjectURL(new Blob([applyBackdrop(item.svg, false)], { type: "image/svg+xml" }));
-  a.download = item.name;
+  // Full-sheet PDFs are built on click so a large run does not render every page up front.
+  if (res.mode === "fullsheet") {
+    a.removeAttribute("href");
+    a.removeAttribute("download");
+  } else {
+    a.href = URL.createObjectURL(new Blob([applyBackdrop(item.svg, false)], { type: "image/svg+xml" }));
+    a.download = item.name;
+  }
 }
 
-/* store-only ZIP writer (no dependencies) */
+/* ---------- full-sheet PDF (client-side, no upload) -------------------- */
+/* Each sheet SVG is drawn at 300 DPI and stored as a JPEG that fills a
+   one-page PDF. The MediaBox is the template's physical page size, so the
+   margins and gaps match the SVG you preview. Print at 100% / actual size.
+   JPEG keeps a 40-sheet run inside a browser tab; a raw pixel buffer of a
+   letter page is large enough to crash one. */
+const PDF_DPI = 300;
+const PDF_JPEG_QUALITY = 0.92;
+const PDF_MAX_PIXELS = 12000000;
+
+function lengthToMm(v) {
+  const [n, unit] = parseLength(v);
+  if (n == null) return null;
+  const mmPer = UNIT_TO_MM[unit];
+  if (mmPer == null) return null;
+  return n * mmPer;
+}
+function pageSizeMm(svgText) {
+  const s = svgText.indexOf("<svg");
+  if (s < 0) throw new Error("No <svg> element to export.");
+  const e = svgText.indexOf(">", s);
+  const tag = svgText.slice(s, e);
+  let widthMm = lengthToMm(getAttr(tag, "width"));
+  let heightMm = lengthToMm(getAttr(tag, "height"));
+  if (!(widthMm > 0) || !(heightMm > 0)) {
+    const page = parsePage(svgText);
+    if (page.uuPerMm) {
+      widthMm = page.vbW / page.uuPerMm;
+      heightMm = page.vbH / page.uuPerMm;
+    } else {
+      widthMm = page.vbW * 25.4 / 96;
+      heightMm = page.vbH * 25.4 / 96;
+    }
+  }
+  if (!(widthMm > 0) || !(heightMm > 0)) throw new Error("Could not determine the page size for PDF export.");
+  return { widthMm, heightMm };
+}
+function svgForRaster(svgText, pxW, pxH) {
+  const s = svgText.indexOf("<svg");
+  const e = svgText.indexOf(">", s);
+  if (s < 0 || e < 0) throw new Error("No <svg> element to export.");
+  let open = svgText.slice(s, e).replace(/\s(?:width|height)="[^"]*"/ig, "");
+  open = open.replace(/^<svg\b/i, '<svg width="' + pxW + 'px" height="' + pxH + 'px"');
+  return svgText.slice(0, s) + open + svgText.slice(e);
+}
+function renderSvgCanvas(svgText, pxW, pxH) {
+  return new Promise((resolve, reject) => {
+    const blob = new Blob([svgForRaster(svgText, pxW, pxH)], { type: "image/svg+xml;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const canvas = document.createElement("canvas");
+        canvas.width = pxW;
+        canvas.height = pxH;
+        const ctx = canvas.getContext("2d", { alpha: false });
+        if (!ctx) throw new Error("Could not create a canvas for PDF export.");
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, pxW, pxH);
+        ctx.imageSmoothingEnabled = true;
+        if ("imageSmoothingQuality" in ctx) ctx.imageSmoothingQuality = "high";
+        ctx.drawImage(img, 0, 0, pxW, pxH);
+        resolve(canvas);
+      } catch (err) {
+        reject(err);
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error("Could not draw the sheet. Check that the template SVG is valid."));
+    };
+    img.src = url;
+  });
+}
+function canvasToJpeg(canvas, quality) {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(async (blob) => {
+      if (!blob) { reject(new Error("Could not encode the sheet.")); return; }
+      try {
+        resolve(new Uint8Array(await blob.arrayBuffer()));
+      } catch (err) {
+        reject(err);
+      }
+    }, "image/jpeg", quality);
+  });
+}
+function concatBytes(chunks) {
+  let len = 0;
+  for (const c of chunks) len += c.length;
+  const out = new Uint8Array(len);
+  let o = 0;
+  for (const c of chunks) { out.set(c, o); o += c.length; }
+  return out;
+}
+function pdfNum(n) {
+  return String(Math.round(n * 10000) / 10000);
+}
+async function buildImagePdf(jpeg, pxW, pxH, widthMm, heightMm) {
+  const pageW = widthMm * 72 / 25.4;
+  const pageH = heightMm * 72 / 25.4;
+  const enc = new TextEncoder();
+  const ascii = (s) => enc.encode(s);
+  const content = ascii("q\n" + pdfNum(pageW) + " 0 0 " + pdfNum(pageH) + " 0 0 cm\n/Im0 Do\nQ\n");
+  const header = ascii("%PDF-1.4\n%\xE2\xE3\xCF\xD3\n");
+  const obj1 = ascii("1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+  const obj2 = ascii("2 0 obj\n<< /Type /Pages /Count 1 /Kids [3 0 R] >>\nendobj\n");
+  const obj3 = ascii("3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 " +
+    pdfNum(pageW) + " " + pdfNum(pageH) +
+    "] /Contents 4 0 R /Resources << /XObject << /Im0 5 0 R >> >> >>\nendobj\n");
+  const obj4 = concatBytes([
+    ascii("4 0 obj\n<< /Length " + content.length + " >>\nstream\n"),
+    content,
+    ascii("endstream\nendobj\n"),
+  ]);
+  const obj5 = concatBytes([
+    ascii("5 0 obj\n<< /Type /XObject /Subtype /Image /Width " + pxW + " /Height " + pxH +
+      " /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length " +
+      jpeg.length + " >>\nstream\n"),
+    jpeg,
+    ascii("\nendstream\nendobj\n"),
+  ]);
+  const objs = [obj1, obj2, obj3, obj4, obj5];
+  const offsets = [0];
+  let cursor = header.length;
+  for (const obj of objs) {
+    offsets.push(cursor);
+    cursor += obj.length;
+  }
+  const pad10 = (n) => String(n).padStart(10, "0");
+  let xref = "xref\n0 6\n0000000000 65535 f \n";
+  for (let i = 1; i <= 5; i++) xref += pad10(offsets[i]) + " 00000 n \n";
+  xref += "trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n" + cursor + "\n%%EOF\n";
+  return concatBytes([header, ...objs, ascii(xref)]);
+}
+async function svgToPdf(svgText) {
+  const { widthMm, heightMm } = pageSizeMm(svgText);
+  let dpi = PDF_DPI;
+  let pxW = Math.max(1, Math.round(widthMm / 25.4 * dpi));
+  let pxH = Math.max(1, Math.round(heightMm / 25.4 * dpi));
+  if (pxW * pxH > PDF_MAX_PIXELS) {
+    dpi *= Math.sqrt(PDF_MAX_PIXELS / (pxW * pxH));
+    pxW = Math.max(1, Math.round(widthMm / 25.4 * dpi));
+    pxH = Math.max(1, Math.round(heightMm / 25.4 * dpi));
+  }
+  const canvas = await renderSvgCanvas(svgText, pxW, pxH);
+  const jpeg = await canvasToJpeg(canvas, PDF_JPEG_QUALITY);
+  canvas.width = 1;
+  canvas.height = 1;
+  return buildImagePdf(jpeg, pxW, pxH, widthMm, heightMm);
+}
+
+/* store-only ZIP writer (no dependencies). Entries may be SVG text or raw bytes. */
 function crc32(bytes) {
   let c = ~0;
   for (let i = 0; i < bytes.length; i++) {
@@ -1222,7 +1474,7 @@ function buildZip(files) {
   let offset = 0;
   for (const f of files) {
     const nameBytes = enc.encode(f.name);
-    const data = enc.encode(f.svg);
+    const data = f.data instanceof Uint8Array ? f.data : enc.encode(f.svg);
     const crc = crc32(data);
     const local = Uint8Array.from([].concat(
       u32(0x04034b50), u16(20), u16(0x0800), u16(0), u16(0), u16(0),
@@ -1243,14 +1495,83 @@ function buildZip(files) {
   return new Blob([...parts, ...central, eocd], { type: "application/zip" });
 }
 
+function triggerDownload(blob, filename) {
+  const a = document.createElement("a");
+  const url = URL.createObjectURL(blob);
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 15000);
+}
+function restoreStatus() {
+  const res = state.result;
+  if (res && res.unmatched && res.unmatched.length)
+    showMessage("warn", "Template fields with no data column (left blank): " + res.unmatched.join(", "));
+  else
+    showMessage("", "");
+}
+function beginExport() {
+  if (!state.result || state.exporting) return null;
+  state.exporting = true;
+  $("dlOneBtn").disabled = true;
+  $("dlAllBtn").disabled = true;
+  return state.result.items.slice();
+}
+function endExport() {
+  state.exporting = false;
+  if (state.result) {
+    $("dlOneBtn").disabled = false;
+    $("dlAllBtn").disabled = false;
+  }
+}
+async function pdfForItem(item) {
+  return svgToPdf(applyBackdrop(item.svg, false));
+}
+async function downloadCurrentPdf() {
+  const items = beginExport();
+  if (!items) return;
+  const item = items[state.current] || items[0];
+  try {
+    showMessage("hint", "Building PDF…");
+    await new Promise((r) => setTimeout(r, 0));
+    const data = await pdfForItem(item);
+    triggerDownload(new Blob([data], { type: "application/pdf" }), item.name);
+    restoreStatus();
+  } catch (err) {
+    showMessage("err", "Could not build the PDF: " + (err && err.message ? err.message : err));
+  } finally {
+    endExport();
+  }
+}
+async function downloadFullSheetZip(items) {
+  try {
+    const files = [];
+    for (let i = 0; i < items.length; i++) {
+      showMessage("hint", "Building PDF " + (i + 1) + " of " + items.length + "…");
+      await new Promise((r) => setTimeout(r, 0));
+      files.push({ name: items[i].name, data: await pdfForItem(items[i]) });
+    }
+    triggerDownload(buildZip(files), "label-sheets.zip");
+    restoreStatus();
+  } catch (err) {
+    showMessage("err", "Could not build the PDFs: " + (err && err.message ? err.message : err));
+  } finally {
+    endExport();
+  }
+}
 function downloadAll() {
-  if (!state.result) return;
+  if (!state.result || state.exporting) return;
+  if (state.result.mode === "fullsheet") {
+    const items = beginExport();
+    if (!items) return;
+    downloadFullSheetZip(items);
+    return;
+  }
   const blob = buildZip(state.result.items.map((it) => ({ name: it.name, svg: applyBackdrop(it.svg, false) })));
   const zipName = state.result.mode === "grid" ? "grid-sheets.zip" : "certificates.zip";
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = zipName;
-  document.body.appendChild(a); a.click(); a.remove();
+  triggerDownload(blob, zipName);
 }
 
 wireDrop("tplDrop", "tplInput", (t) => { state.tpl = t; maybeInitColumnsFromTemplate(); }, "tplName");
@@ -1328,6 +1649,11 @@ if (window.ResizeObserver) {
   });
 }
 $("dlAllBtn").addEventListener("click", downloadAll);
+$("dlOne").addEventListener("click", (e) => {
+  if (!state.result || state.result.mode !== "fullsheet") return;
+  e.preventDefault();
+  downloadCurrentPdf();
+});
 $("addRowBtn").addEventListener("click", addRow);
 $("useTplFieldsBtn").addEventListener("click", useTemplateFields);
 $("clearRowsBtn").addEventListener("click", clearRows);

@@ -5,17 +5,21 @@ The browser app for this fork is at
 <https://jclaire.github.io/MailMerge-SVG/>.
 
 Mail-merge data from a CSV onto an SVG template and produce ready-to-use output in
-one of two layouts:
+one of three layouts:
 
 - **Grid mode** — tile many small records (name badges, labels, place cards) into a
   grid sized for a **Glowforge Pro** laser cutter/engraver (19.5in x 11in bed).
+- **Full-sheet mode** — one sheet per CSV row, every cell a copy of that single
+  label, using the same margins, gaps and grid as grid mode (for example a full
+  Avery sheet of one medication).
 - **Individual mode** — emit one full-page SVG per CSV row (certificates, awards,
   invitations, signage).
 
-In both modes every copy is taken verbatim from the template, so the artwork —
+In every mode each copy is taken verbatim from the template, so the artwork —
 fonts, logos, borders, embedded images — is preserved intact; only the `{{...}}`
-placeholders are replaced. The tool picks the layout **automatically** from the
-template, or you can force it with `--mode`.
+placeholders are replaced. The tool picks grid or individual **automatically**
+from the template, or you can force a layout with `--mode` (full-sheet is always
+explicit).
 
 ## Requirements
 
@@ -44,6 +48,7 @@ rectangle, oval, circle, rounded square, hexagon) plus a full-page certificate.
 | Mode | When it's used | Output |
 | --- | --- | --- |
 | `grid` | Template has a repeating tile group (label `Nametag`, `Tile`, or `Cell`) | A tiled sheet (`output.svg`, paginated to `output_2.svg`, …) |
+| `fullsheet` | Explicit (`--mode fullsheet`) | One full sheet per CSV row in `--out-dir` (every cell is that row) |
 | `individual` | Template has no tile group | One file per CSV row in `--out-dir` |
 | `auto` (default) | — | Picks `grid` if a tile group is found, otherwise `individual` |
 
@@ -53,6 +58,13 @@ rectangle, oval, circle, rounded square, hexagon) plus a full-page certificate.
 tool — no Python, no server, no dependencies. Drop in your template SVG and CSV,
 pick the mode, preview the result, and download a single file or all of them as a
 `.zip`. All processing happens locally in your browser; nothing is uploaded.
+
+**One full sheet per label** (the browser’s “One full sheet per label” mode) builds
+those sheets in the page and downloads them as PDFs: the sheet you are previewing,
+or every row as one `.zip`. Choose the filename column under **Name files by**;
+each name is that column plus the row number (`Amoxicillin-01.pdf`). The CLI
+writes the same sheets as SVG (see below) so they can be diffed and printed; the
+PDF step stays in the browser.
 
 **Run it three ways:**
 
@@ -84,7 +96,9 @@ byte-for-byte identical output.
    whatever bed the template describes. With the bundled 3.25in x 0.75in tag on a
    19.5in x 11in bed this yields a **5 x 13 grid (65 tags per sheet)**; overflow
    rows spill onto `output_2.svg`, `output_3.svg`, …
-4. **Individual mode** substitutes the placeholders across the whole template and
+4. **Full-sheet mode** uses that same grid, but each CSV row is its own sheet and
+   every cell on the sheet is a copy of that one row.
+5. **Individual mode** substitutes the placeholders across the whole template and
    writes one file per row, named after chosen fields (`--name-field`). Templates
    containing both `NAME` and `DATE` default to `Name - Date.svg`; other templates
    default to the first matched field. Filenames are sanitised and de-duplicated
@@ -128,10 +142,10 @@ python mailmerge.py [options]
 
   --template PATH     Template SVG (default: template.svg)
   --names PATH        CSV of merge data (default: names.csv)
-  --mode MODE         auto | grid | individual (default: auto)
+  --mode MODE         auto | grid | fullsheet | individual (default: auto)
 
-  Grid mode:
-  --output PATH       Output SVG; extra sheets get _2, _3 suffixes (default: output.svg)
+  Grid and full-sheet mode:
+  --output PATH       [grid] Output SVG; extra sheets get _2, _3 suffixes (default: output.svg)
   --gap MM            Gap between tiles in millimetres, both axes (default: 2.0)
   --gap-x MM          Horizontal gap between columns in millimetres (default: --gap)
   --gap-y MM          Vertical gap between rows in millimetres (default: --gap)
@@ -141,9 +155,10 @@ python mailmerge.py [options]
   --margin-left MM    Left page margin in millimetres (default: --margin)
   --margin-right MM   Right page margin in millimetres (default: --margin)
 
-  Individual mode:
-  --out-dir DIR       Folder for the per-row SVGs (default: output)
-  --name-field FIELDS Comma-separated template fields used to name each file
+  Individual and full-sheet mode:
+  --out-dir DIR       Folder for the per-row files (default: output)
+  --name-field FIELDS Comma-separated template fields used to name each file.
+                      Full-sheet names also append the row number
                       (default: NAME + DATE when present; otherwise first matched field)
 ```
 
@@ -167,6 +182,40 @@ python mailmerge.py --template samples/certificate.svg --names samples/certifica
 # Force a mode (e.g. emit individual files from a template that also has a tile)
 python mailmerge.py --mode individual --out-dir out
 ```
+
+## One full sheet per label
+
+Grid mode walks the CSV and puts a different row in each cell. **Full-sheet
+mode** keeps that same sheet geometry — label size, columns, rows, per-side
+margins and horizontal/vertical gaps — but writes **one sheet per row** and
+fills every cell with copies of that row. Avery 5520 is 3 × 10 = 30 labels, so
+a 40-row CSV produces 40 sheets of 30 identical labels.
+
+In the browser, choose **One full sheet per label**, set the sheet spacing, pick
+the filename column, then **Download PDF** for the sheet you are previewing or
+**All PDFs (.zip)** for every row. Names look like `Amoxicillin-01.pdf`: the
+chosen column, sanitized for file systems (`/`, `:`, and other unsafe
+characters become `_`), plus the row number zero-padded so the files sort in
+order. A blank value becomes `row-01`. If two names still collide, a `-2`
+suffix is added. Blank CSV rows are skipped and do not consume a number.
+
+The CLI writes those same sheets as SVG (this repo does not rasterize PDF
+outside the browser):
+
+```bash
+python mailmerge.py --template samples/avery-5520-label.svg --names samples/avery-5520.csv \
+  --mode fullsheet --out-dir labels --name-field medication \
+  --margin-top 12.7 --margin-bottom 12.7 \
+  --margin-left 4.7625 --margin-right 4.7625 \
+  --gap-x 3.175 --gap-y 0
+```
+
+That sample is US Letter (215.9 mm × 279.4 mm) with a 66.675 mm × 25.4 mm tile,
+which is the Avery 5520 die (1 in × 2⅝ in, 30-up). Print the SVG or the browser
+PDF at **100% / actual size**. The first label’s top-left sits at the left
+margin 4.7625 mm and top margin 12.7 mm; columns step by 69.85 mm and rows by
+25.4 mm. In the browser each PDF page is that same physical size and the sheet
+is drawn at 300 DPI so it fills the page.
 
 ## Letter label sheets
 
@@ -223,12 +272,14 @@ python mailmerge.py --template letter-label.svg --names names.csv --output label
 - `mailmerge.py` — the generator (grid + individual modes).
 - `index.html` — browser-based version of the generator (no install).
 - `output.svg` — generated grid (created when you run grid mode).
-- `samples/` — example templates: five grid shapes and a full-page certificate,
-  each with a matching CSV.
+- `samples/` — example templates: five grid shapes, a full-page certificate,
+  and an Avery 5520 letter label, each with a matching CSV.
+- `tests/` — `python -m unittest tests.test_fullsheet` checks sheet alignment
+  and that grid and individual output still match.
 
 ## Template requirements
 
-**Grid mode**
+**Grid mode and full-sheet mode**
 
 - The tile artwork must live in a group labelled `Nametag`, `Tile`, or `Cell`
   (`inkscape:label="Tile"`).

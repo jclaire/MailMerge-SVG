@@ -15,10 +15,13 @@ that it picks the right layout automatically.
 | `04-rounded-square` | grid | Rounded square, 2.75in x 2.75in | `{{NAME}}`, `{{PRONOUNS}}` |
 | `05-hexagon` | grid | Hexagon, 3.4in x 3.0in | `{{NAME}}`, `{{TITLE}}`, `{{COMPANY}}` |
 | `certificate` | individual | Full-page landscape, 11in x 8.5in | `{{NAME}}`, `{{POSITION}}` |
+| `avery-5520-label` | fullsheet (or grid) | US Letter, 2.625in x 1in tile, 3 x 10 | `{{MEDICATION}}`, `{{DOSE}}` |
 
-Each grid template's bed is the Glowforge Pro 19.5in x 11in, and the red shape is
+The nametag samples use the Glowforge Pro 19.5in x 11in bed, and the red shape is
 the cut line, so the generated grid is ready to send straight to the laser. The
-certificate has no repeating tile, so the tool emits one SVG file per row.
+certificate has no repeating tile, so the tool emits one SVG file per row. The
+Avery 5520 sample is a US Letter page; use `--mode fullsheet` (or the browser’s
+“One full sheet per label”) with the margins in the command below.
 
 ## Run one
 
@@ -30,6 +33,13 @@ python mailmerge.py --template samples/03-circle.svg --names samples/03-circle.c
 
 # Certificate sample -> one file per row in ./certs
 python mailmerge.py --template samples/certificate.svg --names samples/certificate.csv --out-dir certs
+
+# Avery 5520 -> one full sheet of copies per row (SVG)
+python mailmerge.py --template samples/avery-5520-label.svg --names samples/avery-5520.csv \
+  --mode fullsheet --out-dir labels --name-field medication \
+  --margin-top 12.7 --margin-bottom 12.7 \
+  --margin-left 4.7625 --margin-right 4.7625 \
+  --gap-x 3.175 --gap-y 0
 ```
 
 The tool reports the fields it detected and which CSV columns matched, e.g.:

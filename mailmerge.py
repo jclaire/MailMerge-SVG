@@ -5,7 +5,7 @@ contains ``{{TOKEN}}`` placeholders. Every distinct token is auto-detected and
 matched to a CSV column of the same name (case-insensitive, any order), so a
 template declares the fields it needs and any matching CSV merges in.
 
-Two output modes:
+Three output modes:
 
 - ``grid`` -- the template carries a single repeating tile (a ``<g>`` labelled
   ``Nametag``/``Tile``/``Cell`` containing a ``... Border`` cut shape). The tile
@@ -14,6 +14,9 @@ Two output modes:
   can differ horizontally and vertically, and the page margin can differ on
   each side, so a sheet can register to an asymmetric die-cut layout. Ideal for
   nametags, labels and other many-up cut sheets.
+- ``fullsheet`` -- the same sheet layout as ``grid``, but each CSV row gets its
+  own page and every cell on that page is a copy of that one row. A 30-up
+  label layout and a 40-row CSV produce 40 sheets of 30 identical labels.
 - ``individual`` -- the whole template page is one document (a certificate,
   diploma, badge, ...). One output SVG is written per CSV row.
 
@@ -439,6 +442,22 @@ def unique_name(base, used):
     return name
 
 
+def fullsheet_basename(row, name_fields, index, count):
+    """File stem for one full-sheet export: sanitized fields, then the row number.
+
+    ``index`` is the 0-based position among usable data rows. The row number is
+    1-based and zero-padded to at least two digits (more when ``count`` needs
+    it) so the files sort in row order. Two rows that share a name stay distinct
+    because the row number differs; ``unique_name`` still breaks any leftover
+    collision.
+    """
+    label = sanitize_filename(
+        " - ".join(row.get(field, "") for field in name_fields if row.get(field, ""))
+    )
+    width = max(2, len(str(count)))
+    return f"{label or 'row'}-{str(index + 1).zfill(width)}"
+
+
 def match_fields(tokens, fieldnames):
     """Given detected placeholder tokens and CSV field names, return
     ``(template_fields, matched, unmatched, header_set)``."""
@@ -459,10 +478,12 @@ def generate(template_path, names_csv_path, output_path="output.svg", mode="auto
     ``mode`` is ``"auto"`` (choose based on whether the template has a tile
     group), ``"grid"`` or ``"individual"``.
 
-    In grid mode ``gap`` (mm) is the space between tiles on both axes and
-    ``margin`` (mm) is the inset on every side. ``gap_x`` / ``gap_y`` and
-    ``margin_top`` / ``margin_bottom`` / ``margin_left`` / ``margin_right``
-    override one axis or side; leave them unset to keep the shared value.
+    In grid and fullsheet mode ``gap`` (mm) is the space between tiles on both
+    axes and ``margin`` (mm) is the inset on every side. ``gap_x`` / ``gap_y``
+    and ``margin_top`` / ``margin_bottom`` / ``margin_left`` /
+    ``margin_right`` override one axis or side; leave them unset to keep the
+    shared value. Fullsheet writes one SVG per row into ``out_dir``, named
+    from ``name_field`` plus the row number.
     """
     with open(template_path, encoding="utf-8") as fh:
         svg_text = fh.read()
@@ -485,16 +506,33 @@ def generate(template_path, names_csv_path, output_path="output.svg", mode="auto
             margin_top=margin_top, margin_bottom=margin_bottom,
             margin_left=margin_left, margin_right=margin_right,
         )
+    if resolved == "fullsheet":
+        if tile is None:
+            raise ValueError(
+                "fullsheet mode needs a repeating tile group labelled one of "
+                f"{', '.join(TILE_LABELS)} (e.g. inkscape:label=\"Nametag\")."
+            )
+        return generate_fullsheet(
+            svg_text, tile, names_csv_path, out_dir, name_field,
+            gap, margin,
+            gap_x=gap_x, gap_y=gap_y,
+            margin_top=margin_top, margin_bottom=margin_bottom,
+            margin_left=margin_left, margin_right=margin_right,
+        )
     return generate_individual(svg_text, names_csv_path, out_dir, name_field)
 
 
-def generate_grid(svg_text, tile, names_csv_path, output_path, gap=2.0, margin=0.0,
-                  gap_x=None, gap_y=None,
-                  margin_top=None, margin_bottom=None,
-                  margin_left=None, margin_right=None):
+def _grid_layout(svg_text, tile, gap, margin, gap_x, gap_y,
+                 margin_top, margin_bottom, margin_left, margin_right):
+    """Shared sheet geometry for grid and full-sheet mode.
+
+    Spacing arrives in millimetres and is converted into the template's user
+    units so a millimetre is a real millimetre. If the template declares no
+    absolute size, the values are used as user units. A single gap or margin
+    still fills both axes or every side; an explicit per-axis gap or per-side
+    margin replaces only that one.
+    """
     start, end, tile_label = tile
-    prefix = svg_text[:start]
-    suffix = svg_text[end:]
     nametag_xml = svg_text[start:end]
     border_labels = [f"{tile_label} Border", "Border"]
 
@@ -508,11 +546,6 @@ def generate_grid(svg_text, tile, names_csv_path, output_path, gap=2.0, margin=0
     page_w, page_h, uu_per_mm = parse_page(svg_text)
     tag_w, tag_h, stroke = parse_tag_geometry(nametag_xml, border_labels)
 
-    # Spacing arrives in millimetres. Convert into the template's user units so
-    # a millimetre is a real millimetre on any template. If the template
-    # declares no absolute size, treat the values as user units.
-    # A single gap or margin still fills both axes or every side; an explicit
-    # per-axis gap or per-side margin replaces only that one.
     scale = uu_per_mm if uu_per_mm else 1.0
     spacing_mm = resolve_grid_spacing(
         gap, margin,
@@ -531,7 +564,83 @@ def generate_grid(svg_text, tile, names_csv_path, output_path, gap=2.0, margin=0
         margin_bottom=spacing["margin_bottom"],
         margin_left=spacing["margin_left"],
     )
-    per_page = cols * rows
+
+    mm_per_uu = (1.0 / uu_per_mm) if uu_per_mm else None
+    if mm_per_uu is not None:
+        page_size_in = (page_w * mm_per_uu / MM_PER_INCH, page_h * mm_per_uu / MM_PER_INCH)
+        tag_size_in = (tag_w * mm_per_uu / MM_PER_INCH, tag_h * mm_per_uu / MM_PER_INCH)
+    else:
+        page_size_in = None
+        tag_size_in = None
+
+    return {
+        "prefix": svg_text[:start],
+        "suffix": svg_text[end:],
+        "nametag_xml": nametag_xml,
+        "tile_label": tile_label,
+        "tokens": tokens,
+        "page_w": page_w,
+        "page_h": page_h,
+        "tag_w": tag_w,
+        "tag_h": tag_h,
+        "spacing_mm": spacing_mm,
+        "spacing": spacing,
+        "cols": cols,
+        "rows": rows,
+        "pitch_x": pitch_x,
+        "pitch_y": pitch_y,
+        "per_page": cols * rows,
+        "page_size_in": page_size_in,
+        "tag_size_in": tag_size_in,
+    }
+
+
+def _placed_copies(layout, cell_rows, missing):
+    """Tile ``cell_rows`` into the sheet, one translate() group per cell."""
+    copies = []
+    cols = layout["cols"]
+    pitch_x = layout["pitch_x"]
+    pitch_y = layout["pitch_y"]
+    spacing = layout["spacing"]
+    for i, data_row in enumerate(cell_rows):
+        col = i % cols
+        grid_row = i // cols
+        tx = spacing["margin_left"] + col * pitch_x
+        ty = spacing["margin_top"] + grid_row * pitch_y
+        copies.append(make_tag_copy(
+            layout["nametag_xml"], data_row, layout["tokens"], i, tx, ty, missing,
+        ))
+    return "".join(copies)
+
+
+def _resolve_name_fields(name_field, matched, header_set, fieldnames):
+    """Columns used to name per-row files. Same default as individual mode."""
+    name_fields = [
+        field.strip().lower()
+        for field in (name_field or "").split(",")
+        if field.strip()
+    ]
+    invalid_name_fields = [field for field in name_fields if field not in header_set]
+    if invalid_name_fields:
+        raise ValueError(
+            f"--name-field contains unknown CSV column(s): {invalid_name_fields}. "
+            f"Available columns: {fieldnames}."
+        )
+    if not name_fields:
+        name_fields = ["name", "date"] if "name" in matched and "date" in matched else [matched[0]]
+    return name_fields
+
+
+def generate_grid(svg_text, tile, names_csv_path, output_path, gap=2.0, margin=0.0,
+                  gap_x=None, gap_y=None,
+                  margin_top=None, margin_bottom=None,
+                  margin_left=None, margin_right=None):
+    layout = _grid_layout(
+        svg_text, tile, gap, margin, gap_x, gap_y,
+        margin_top, margin_bottom, margin_left, margin_right,
+    )
+    tokens = layout["tokens"]
+    per_page = layout["per_page"]
 
     fieldnames, data_rows = read_rows(names_csv_path)
     if not data_rows:
@@ -549,44 +658,90 @@ def generate_grid(svg_text, tile, names_csv_path, output_path, gap=2.0, margin=0
     written = []
     for page in range(total_pages):
         chunk = data_rows[page * per_page:(page + 1) * per_page]
-        copies = []
-        for i, data_row in enumerate(chunk):
-            col = i % cols
-            grid_row = i // cols
-            tx = spacing["margin_left"] + col * pitch_x
-            ty = spacing["margin_top"] + grid_row * pitch_y
-            copies.append(make_tag_copy(nametag_xml, data_row, tokens, i, tx, ty, missing))
-
-        out_svg = prefix + "".join(copies) + suffix
+        out_svg = layout["prefix"] + _placed_copies(layout, chunk, missing) + layout["suffix"]
         out_name = page_filename(output_path, page + 1)
         with open(out_name, "w", encoding="utf-8") as fh:
             fh.write(out_svg)
         written.append((out_name, len(chunk)))
 
-    # For human-readable reporting only. When the template has no absolute size
-    # we report raw user units rather than inches.
-    mm_per_uu = (1.0 / uu_per_mm) if uu_per_mm else None
-    if mm_per_uu is not None:
-        page_size_in = (page_w * mm_per_uu / MM_PER_INCH, page_h * mm_per_uu / MM_PER_INCH)
-        tag_size_in = (tag_w * mm_per_uu / MM_PER_INCH, tag_h * mm_per_uu / MM_PER_INCH)
-    else:
-        page_size_in = None
-        tag_size_in = None
-
     return {
         "mode": "grid",
-        "tile_label": tile_label,
+        "tile_label": layout["tile_label"],
         "fields": template_fields,
         "matched": matched,
         "unmatched": sorted(unmatched),
         "csv_columns": fieldnames,
-        "page_size_uu": (page_w, page_h),
-        "tag_size_uu": (tag_w, tag_h),
-        "page_size_in": page_size_in,
-        "tag_size_in": tag_size_in,
-        "grid": (cols, rows),
-        "spacing_mm": spacing_mm,
+        "page_size_uu": (layout["page_w"], layout["page_h"]),
+        "tag_size_uu": (layout["tag_w"], layout["tag_h"]),
+        "page_size_in": layout["page_size_in"],
+        "tag_size_in": layout["tag_size_in"],
+        "grid": (layout["cols"], layout["rows"]),
+        "spacing_mm": layout["spacing_mm"],
         "per_page": per_page,
+        "names": len(data_rows),
+        "files": written,
+    }
+
+
+def generate_fullsheet(svg_text, tile, names_csv_path, out_dir="output", name_field=None,
+                       gap=2.0, margin=0.0, gap_x=None, gap_y=None,
+                       margin_top=None, margin_bottom=None,
+                       margin_left=None, margin_right=None):
+    """Write one full sheet per CSV row, every cell a copy of that row.
+
+    Placement uses the same margins, gaps and tile size as grid mode, so a
+    sheet lines up with the mixed-label grid on the same die.
+    """
+    layout = _grid_layout(
+        svg_text, tile, gap, margin, gap_x, gap_y,
+        margin_top, margin_bottom, margin_left, margin_right,
+    )
+    tokens = layout["tokens"]
+    per_page = layout["per_page"]
+
+    fieldnames, data_rows = read_rows(names_csv_path)
+    if not data_rows:
+        raise ValueError(f"No data rows found in {names_csv_path}.")
+
+    template_fields, matched, unmatched, header_set = match_fields(tokens, fieldnames)
+    if not matched:
+        raise ValueError(
+            f"CSV {names_csv_path} has no columns matching the template "
+            f"placeholders {template_fields}. CSV columns: {fieldnames}."
+        )
+
+    name_fields = _resolve_name_fields(name_field, matched, header_set, fieldnames)
+
+    os.makedirs(out_dir, exist_ok=True)
+    missing = set()
+    used = set()
+    written = []
+    for i, data_row in enumerate(data_rows):
+        copies = _placed_copies(layout, [data_row] * per_page, missing)
+        out_svg = layout["prefix"] + copies + layout["suffix"]
+        base = fullsheet_basename(data_row, name_fields, i, len(data_rows))
+        out_name = os.path.join(out_dir, unique_name(base, used) + ".svg")
+        with open(out_name, "w", encoding="utf-8") as fh:
+            fh.write(out_svg)
+        written.append((out_name, per_page))
+
+    return {
+        "mode": "fullsheet",
+        "tile_label": layout["tile_label"],
+        "fields": template_fields,
+        "matched": matched,
+        "unmatched": sorted(unmatched),
+        "csv_columns": fieldnames,
+        "page_size_uu": (layout["page_w"], layout["page_h"]),
+        "tag_size_uu": (layout["tag_w"], layout["tag_h"]),
+        "page_size_in": layout["page_size_in"],
+        "tag_size_in": layout["tag_size_in"],
+        "grid": (layout["cols"], layout["rows"]),
+        "spacing_mm": layout["spacing_mm"],
+        "per_page": per_page,
+        "name_field": ",".join(name_fields),
+        "name_fields": name_fields,
+        "out_dir": out_dir,
         "names": len(data_rows),
         "files": written,
     }
@@ -617,19 +772,7 @@ def generate_individual(svg_text, names_csv_path, out_dir="output", name_field=N
     # Use an explicit comma-separated field list when supplied. Otherwise,
     # certificates with both NAME and DATE use both; other templates retain
     # the first-matched-field default.
-    name_fields = [
-        field.strip().lower()
-        for field in (name_field or "").split(",")
-        if field.strip()
-    ]
-    invalid_name_fields = [field for field in name_fields if field not in header_set]
-    if invalid_name_fields:
-        raise ValueError(
-            f"--name-field contains unknown CSV column(s): {invalid_name_fields}. "
-            f"Available columns: {fieldnames}."
-        )
-    if not name_fields:
-        name_fields = ["name", "date"] if "name" in matched and "date" in matched else [matched[0]]
+    name_fields = _resolve_name_fields(name_field, matched, header_set, fieldnames)
 
     os.makedirs(out_dir, exist_ok=True)
     missing = set()
@@ -667,6 +810,35 @@ def generate_individual(svg_text, names_csv_path, out_dir="output", name_field=N
     }
 
 
+def format_spacing_mm(spacing_mm):
+    """Human-readable gap and margin text shared by the grid-like modes."""
+    sp = spacing_mm
+    if sp["gap_x"] == sp["gap_y"]:
+        gap_txt = f"gap {sp['gap_x']:g} mm"
+    else:
+        gap_txt = f"gap-x {sp['gap_x']:g} mm, gap-y {sp['gap_y']:g} mm"
+    sides = (sp["margin_top"], sp["margin_right"], sp["margin_bottom"], sp["margin_left"])
+    if len(set(sides)) == 1:
+        margin_txt = f"margin {sides[0]:g} mm"
+    else:
+        margin_txt = (
+            f"margin T {sp['margin_top']:g} / R {sp['margin_right']:g} / "
+            f"B {sp['margin_bottom']:g} / L {sp['margin_left']:g} mm"
+        )
+    return gap_txt, margin_txt
+
+
+def _print_bed(result):
+    if result["page_size_in"] and result["tag_size_in"]:
+        pw, ph = result["page_size_in"]
+        tw, th = result["tag_size_in"]
+        print(f"Bed: {pw:.2f}in x {ph:.2f}in   Tile: {tw:.2f}in x {th:.2f}in")
+    else:
+        pw, ph = result["page_size_uu"]
+        tw, th = result["tag_size_uu"]
+        print(f"Bed: {pw:g} x {ph:g} (user units)   Tile: {tw:g} x {th:g} (user units)")
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         description="Mail-merge rows from a CSV onto an SVG template. Either tile "
@@ -675,15 +847,16 @@ def main(argv=None):
     )
     parser.add_argument("--template", default="template.svg", help="Template SVG (default: template.svg)")
     parser.add_argument("--names", default="names.csv", help="CSV of merge data (default: names.csv)")
-    parser.add_argument("--mode", choices=("auto", "grid", "individual"), default="auto",
-                        help="Output layout: grid (tiled), individual (one file per row), "
-                             "or auto-detect (default: auto)")
+    parser.add_argument("--mode", choices=("auto", "grid", "fullsheet", "individual"), default="auto",
+                        help="Output layout: grid (tiled), fullsheet (one sheet of copies per row), "
+                             "individual (one file per row), or auto-detect (default: auto)")
     parser.add_argument("--output", default="output.svg",
                         help="[grid] Output SVG; extra sheets get _2, _3 suffixes (default: output.svg)")
     parser.add_argument("--out-dir", default="output",
-                        help="[individual] Directory for the per-row SVGs (default: output)")
+                        help="[individual, fullsheet] Directory for the per-row files (default: output)")
     parser.add_argument("--name-field", default=None,
-                        help="[individual] CSV column(s), comma-separated, used to name each output file "
+                        help="[individual, fullsheet] CSV column(s), comma-separated, used to name each "
+                             "output file. Full-sheet names also append the row number. "
                              "(default: NAME and DATE when both exist; otherwise the first matched field)")
     parser.add_argument("--gap", type=float, default=2.0,
                         help="[grid] Gap between tiles in mm, both axes (default: 2.0). "
@@ -725,32 +898,27 @@ def main(argv=None):
 
     if result["mode"] == "grid":
         cols, rows = result["grid"]
-        if result["page_size_in"] and result["tag_size_in"]:
-            pw, ph = result["page_size_in"]
-            tw, th = result["tag_size_in"]
-            print(f"Bed: {pw:.2f}in x {ph:.2f}in   Tile: {tw:.2f}in x {th:.2f}in")
-        else:
-            pw, ph = result["page_size_uu"]
-            tw, th = result["tag_size_uu"]
-            print(f"Bed: {pw:g} x {ph:g} (user units)   Tile: {tw:g} x {th:g} (user units)")
-        sp = result["spacing_mm"]
-        if sp["gap_x"] == sp["gap_y"]:
-            gap_txt = f"gap {sp['gap_x']:g} mm"
-        else:
-            gap_txt = f"gap-x {sp['gap_x']:g} mm, gap-y {sp['gap_y']:g} mm"
-        sides = (sp["margin_top"], sp["margin_right"], sp["margin_bottom"], sp["margin_left"])
-        if len(set(sides)) == 1:
-            margin_txt = f"margin {sides[0]:g} mm"
-        else:
-            margin_txt = (
-                f"margin T {sp['margin_top']:g} / R {sp['margin_right']:g} / "
-                f"B {sp['margin_bottom']:g} / L {sp['margin_left']:g} mm"
-            )
+        _print_bed(result)
+        gap_txt, margin_txt = format_spacing_mm(result["spacing_mm"])
         print(f"Grid: {cols} cols x {rows} rows = {result['per_page']} per sheet")
         print(f"Spacing: {gap_txt}; {margin_txt}")
         print(f"Records: {result['names']}  ->  {len(result['files'])} sheet(s)")
         for name, count in result["files"]:
             print(f"  {name}: {count} tile(s)")
+    elif result["mode"] == "fullsheet":
+        cols, rows = result["grid"]
+        _print_bed(result)
+        gap_txt, margin_txt = format_spacing_mm(result["spacing_mm"])
+        print(f"Mode: full sheet per label")
+        print(f"Grid: {cols} cols x {rows} rows = {result['per_page']} copies per sheet")
+        print(f"Spacing: {gap_txt}; {margin_txt}")
+        print(f"File name from {' + '.join(result['name_fields'])} + row number")
+        print(f"Records: {result['names']}  ->  {len(result['files'])} file(s) in {result['out_dir']}/")
+        shown = result["files"][:10]
+        for name, count in shown:
+            print(f"  {name}: {count} tile(s)")
+        if len(result["files"]) > len(shown):
+            print(f"  ... and {len(result['files']) - len(shown)} more")
     else:
         print(f"Mode: individual  (file name from {' + '.join(result['name_fields'])})")
         print(f"Records: {result['names']}  ->  {len(result['files'])} file(s) in {result['out_dir']}/")
