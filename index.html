@@ -89,6 +89,20 @@
   .zoomctl #zoomLabel { font-size: 12px; color: var(--muted); min-width: 42px; text-align: center; }
   a.dl { text-decoration: none; }
   footer { max-width: 1100px; margin: 0 auto; padding: 0 20px 40px; color: var(--muted); font-size: 12px; }
+  body.editor-open { overflow: hidden; }
+  #editorOverlay[hidden] { display: none !important; }
+  #editorOverlay {
+    position: fixed; inset: 0; z-index: 40; background: var(--bg);
+    display: flex; flex-direction: column;
+  }
+  .editor-bar {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 10px 14px; border-bottom: 1px solid var(--line); background: var(--panel); flex-wrap: wrap;
+  }
+  .editor-bar strong { font-size: 14px; }
+  .editor-status { color: var(--muted); font-size: 12px; max-width: 640px; }
+  .editor-status.err { color: #ffb3b3; }
+  #editorFrame { flex: 1 1 auto; width: 100%; border: 0; background: #fff; min-height: 0; }
   code { background: var(--panel2); padding: 1px 5px; border-radius: 5px; font-size: 12px; }
   .data-panel { grid-column: 1 / -1; }
   #dataCount { color: var(--muted); font-size: 12px; font-weight: 400; text-transform: none; letter-spacing: 0; margin-left: 8px; }
@@ -124,7 +138,7 @@
 <body>
 <header>
   <h1>MailMerge&#8209;SVG</h1>
-  <p>Mail-merge a CSV onto an SVG template — tile it into a laser-ready grid, or make one page per row (certificates, badges). All in your browser; nothing is uploaded.</p>
+  <p>Mail-merge a CSV onto an SVG template — tile it into a laser-ready grid, or make one page per row (certificates, badges). Edit the template in the page, then merge. All in your browser; nothing is uploaded.</p>
 </header>
 <main>
   <div class="panel" id="controls">
@@ -137,6 +151,10 @@
         <input type="file" id="tplInput" accept=".svg,image/svg+xml">
       </div>
       <div class="filename" id="tplName"></div>
+      <div class="actions" style="margin-top:8px">
+        <button type="button" id="editTplBtn" class="ghost" disabled>Edit template</button>
+      </div>
+      <p class="hint-note">Open the loaded SVG in the editor to move, resize, and recolor it. Leave <code>{{FIELD}}</code> placeholders as text.</p>
     </div>
 
     <div class="field">
@@ -264,8 +282,25 @@
   <code>Backdrop</code> (e.g. an image of the pre-printed stock) to preview alignment — it's shown only on screen, never in downloads.
   Use the zoom controls (or <code>Ctrl</code>/<code>⌘</code> + scroll over the preview) to inspect detail; <strong>Fit</strong> resets to the full view.
   Host this file free on GitHub Pages, a gist (via htmlpreview), or anywhere static.
+  Template editing uses <a href="https://github.com/svg-edit/svgedit">SVG-Edit</a> (MIT) and needs the page to be served over HTTP.
 </footer>
 
+<div id="editorOverlay" hidden>
+  <div class="editor-bar">
+    <div>
+      <strong>Edit template</strong>
+      <div id="editorStatus" class="editor-status"></div>
+    </div>
+    <div class="actions">
+      <button type="button" id="editorDownload" class="ghost" disabled>Download SVG</button>
+      <button type="button" id="editorCancel" class="ghost">Cancel</button>
+      <button type="button" id="editorApply" disabled>Apply</button>
+    </div>
+  </div>
+  <iframe id="editorFrame" title="SVG template editor"></iframe>
+</div>
+
+<script src="editor/preserve-fields.js"></script>
 <script>
 "use strict";
 
@@ -1035,6 +1070,7 @@ function run() {
 // Cell edits and option changes: re-run the merge WITHOUT rebuilding the grid,
 // so the input the user is typing in keeps focus.
 function regenerate() {
+  syncTemplateActions();
   const mode = $("mode").value;
   if (!state.tpl) {
     clearOutputs("Load a template (or click <strong>Load example</strong>), then add data rows below.");
@@ -1346,6 +1382,171 @@ $("exampleBtn").addEventListener("click", () => {
 updateModeUI(effectiveMode());
 updateBackdropUI();
 renderDataEditor();
+syncTemplateActions();
+
+/* ---------------- in-browser template editor (SVG-Edit) ---------------- */
+
+let editorSession = 0;
+
+function syncTemplateActions() {
+  const btn = $("editTplBtn");
+  if (btn) btn.disabled = !state.tpl;
+}
+
+function templateFileName() {
+  const raw = ($("tplName").textContent || "").replace(/\s+\(edited\)$/, "").trim();
+  if (!raw) return "template.svg";
+  return /\.svg$/i.test(raw) ? raw : raw + ".svg";
+}
+
+function downloadSvgFile(filename, svg) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml" }));
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+function setEditorStatus(text, kind) {
+  const el = $("editorStatus");
+  el.textContent = text || "";
+  el.className = "editor-status" + (kind ? " " + kind : "");
+}
+
+function closeEditor() {
+  editorSession++;
+  clearTimeout($("editorOverlay")._readyTimer);
+  document.body.classList.remove("editor-open");
+  $("editorOverlay").hidden = true;
+  $("editorFrame").src = "about:blank";
+  setEditorStatus("");
+}
+
+function readEditorDocument() {
+  const frame = $("editorFrame");
+  const win = frame && frame.contentWindow;
+  const ed = win && win.svgEditor;
+  if (!ed || !ed.svgCanvas) throw new Error("The editor is not ready yet.");
+  try {
+    const active = win.document.activeElement;
+    if (active && active !== win.document.body && active.blur) active.blur();
+  } catch (e) { /* the frame can be mid-navigation */ }
+  try { ed.svgCanvas.clearSelection(); } catch (e) { /* no selection to clear */ }
+  let resolution = null;
+  try { resolution = ed.svgCanvas.getResolution(); } catch (e) { resolution = null; }
+  const svg = ed.svgCanvas.getSvgString();
+  if (!svg || svg.indexOf("<svg") < 0) throw new Error("The editor did not return an SVG document.");
+  return { svg: svg, resolution: resolution };
+}
+
+function restoredEditorSvg() {
+  const doc = readEditorDocument();
+  return MailmergeFields.restoreTemplateFromEditor(doc.svg, state.editorPage, doc.resolution);
+}
+
+function openEditor() {
+  if (!state.tpl) return;
+  if (typeof MailmergeFields !== "object" || !MailmergeFields.prepareTemplateForEditor) {
+    showMessage("err", "The template editor scripts did not load.");
+    return;
+  }
+  const session = ++editorSession;
+  state.editorPage = MailmergeFields.capturePage(state.tpl);
+  $("editorApply").disabled = true;
+  $("editorDownload").disabled = true;
+  setEditorStatus("Loading editor…");
+  document.body.classList.add("editor-open");
+  $("editorOverlay").hidden = false;
+  const frame = $("editorFrame");
+  frame.dataset.session = String(session);
+  frame.dataset.loaded = "";
+  clearTimeout($("editorOverlay")._readyTimer);
+  $("editorOverlay")._readyTimer = setTimeout(() => {
+    if (session !== editorSession || !$("editorApply").disabled) return;
+    setEditorStatus("The editor could not be loaded. Serve this app over HTTP (GitHub Pages or python -m http.server) so its scripts can run.", "err");
+  }, 20000);
+  frame.src = "vendor/svgedit/dist/editor/mailmerge.html";
+}
+
+function onEditorMessage(ev) {
+  const frame = $("editorFrame");
+  if (!frame || ev.source !== frame.contentWindow) return;
+  const data = ev.data;
+  if (!data || data.source !== "mailmerge-svgedit") return;
+  const session = Number(frame.dataset.session);
+  if (session !== editorSession) return;
+  if (data.type === "error") {
+    setEditorStatus(data.message || "The editor failed to start.", "err");
+    return;
+  }
+  if (data.type !== "ready") return;
+  if (frame.dataset.loaded === String(session)) return;
+  frame.dataset.loaded = String(session);
+  const ed = frame.contentWindow.svgEditor;
+  if (!ed) {
+    setEditorStatus("The editor did not start.", "err");
+    return;
+  }
+  let prepared;
+  try { prepared = MailmergeFields.prepareTemplateForEditor(state.tpl); }
+  catch (err) { setEditorStatus(err.message, "err"); return; }
+  setEditorStatus("Loading template…");
+  Promise.resolve(ed.loadFromString(prepared, { noAlert: true })).then(() => {
+    if (session !== editorSession) return;
+    clearTimeout($("editorOverlay")._readyTimer);
+    $("editorApply").disabled = false;
+    $("editorDownload").disabled = false;
+    const names = MailmergeFields.placeholderFields(state.tpl);
+    const hint = names.length
+      ? " Leave placeholders such as {{" + names[0].toUpperCase() + "}} as text."
+      : " Add {{FIELD}} text for each merge column.";
+    setEditorStatus("Editing " + templateFileName() + "." + hint);
+  }).catch((err) => {
+    if (session !== editorSession) return;
+    setEditorStatus("Could not open this SVG in the editor. " + (err && err.message ? err.message : ""), "err");
+  });
+}
+
+$("editTplBtn").addEventListener("click", openEditor);
+$("editorCancel").addEventListener("click", closeEditor);
+$("editorDownload").addEventListener("click", () => {
+  try {
+    const svg = restoredEditorSvg();
+    const name = templateFileName();
+    downloadSvgFile(name, svg);
+    setEditorStatus("Downloaded " + name + ".");
+  } catch (err) {
+    setEditorStatus(err.message, "err");
+  }
+});
+$("editorApply").addEventListener("click", () => {
+  let restored;
+  try { restored = restoredEditorSvg(); }
+  catch (err) { setEditorStatus(err.message, "err"); return; }
+  const before = new Set(MailmergeFields.placeholderFields(state.tpl));
+  const after = new Set(MailmergeFields.placeholderFields(restored));
+  const lost = [...before].filter((f) => !after.has(f));
+  const hadTile = !!findTileGroup(state.tpl);
+  let lostTile = false;
+  if (hadTile) {
+    try { lostTile = !findTileGroup(restored); }
+    catch (e) { lostTile = true; }
+  }
+  if (lost.length || lostTile) {
+    const bits = [];
+    if (lost.length) bits.push("Merge fields no longer in the template: " + lost.join(", ") + ".");
+    if (lostTile) bits.push("The repeating tile label (Nametag, Tile, or Cell) was removed, so grid mode will not see a tile.");
+    if (!window.confirm(bits.join(" ") + " Apply anyway?")) return;
+  }
+  state.tpl = restored;
+  const name = $("tplName");
+  if (!name.textContent) name.textContent = "template.svg (edited)";
+  else if (!/\(edited\)/.test(name.textContent)) name.textContent += " (edited)";
+  closeEditor();
+  run();
+});
+window.addEventListener("message", onEditorMessage);
 </script>
 </body>
 </html>
