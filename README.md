@@ -74,7 +74,9 @@ PDF step stays in the browser.
   every push to `main`. Enable **Settings → Pages → Source: GitHub Actions** once;
   the app is then live at `https://jclaire.github.io/MailMerge-SVG/`.
 - **Gist** — paste `index.html` into a public [gist](https://gist.github.com) and
-  open it through `https://htmlpreview.github.io/?<raw-gist-url>`.
+  open it through `https://htmlpreview.github.io/?<raw-gist-url>`. A gist of
+  that file alone has no Avery list; `avery-sheets.js` has to sit next to
+  `index.html`. Margins still work by hand.
 
 The web app and the Python CLI share identical merge logic and produce
 byte-for-byte identical output.
@@ -143,13 +145,15 @@ python mailmerge.py [options]
   --template PATH     Template SVG (default: template.svg)
   --names PATH        CSV of merge data (default: names.csv)
   --mode MODE         auto | grid | fullsheet | individual (default: auto)
+  --sheet NUMBER      Avery product number (alias --preset). See --list-sheets
+  --list-sheets       Print the built-in Avery formats and exit
 
   Grid and full-sheet mode:
   --output PATH       [grid] Output SVG; extra sheets get _2, _3 suffixes (default: output.svg)
-  --gap MM            Gap between tiles in millimetres, both axes (default: 2.0)
+  --gap MM            Gap between labels in millimetres, both axes (default: 2.0, or the sheet)
   --gap-x MM          Horizontal gap between columns in millimetres (default: --gap)
   --gap-y MM          Vertical gap between rows in millimetres (default: --gap)
-  --margin MM         Margin on every side in millimetres (default: 0.0)
+  --margin MM         Margin on every side in millimetres (default: 0.0, or the sheet)
   --margin-top MM     Top page margin in millimetres (default: --margin)
   --margin-bottom MM  Bottom page margin in millimetres (default: --margin)
   --margin-left MM    Left page margin in millimetres (default: --margin)
@@ -191,95 +195,106 @@ margins and horizontal/vertical gaps — but writes **one sheet per row** and
 fills every cell with copies of that row. Avery 5520 is 3 × 10 = 30 labels, so
 a 40-row CSV produces 40 sheets of 30 identical labels.
 
-In the browser, choose **One full sheet per label**, set the sheet spacing, pick
-the filename column, then **Download PDF** for the sheet you are previewing or
-**All PDFs (.zip)** for every row. Names look like `Amoxicillin-01.pdf`: the
-chosen column, sanitized for file systems (`/`, `:`, and other unsafe
-characters become `_`), plus the row number zero-padded so the files sort in
-order. A blank value becomes `row-01`. If two names still collide, a `-2`
-suffix is added. Blank CSV rows are skipped and do not consume a number.
+A template can be either of these:
+
+- a **tile group** (`Nametag`, `Tile`, or `Cell`) on a page that is already the
+  sheet, or
+- a **single label**: the root `<svg>` is one label, with a physical `width`
+  and `height` (for example `1.75in` and `0.66in`) and a `viewBox`. Full-sheet
+  mode copies that whole file into each cell. Defs and styles stay inside the
+  copy. Grid mode still needs a tile group.
+
+In the browser, choose **One full sheet per label**, pick an **Avery sheet**
+(or set the spacing yourself), pick the filename column, then **Download PDF**
+for the sheet you are previewing or **All PDFs (.zip)** for every row. Names
+look like `Sample-A-01.pdf`: the chosen column, sanitized for file systems
+(`/`, `:`, and other unsafe characters become `_`), plus the row number
+zero-padded so the files sort in order. A blank value becomes `row-01`. If two
+names still collide, a `-2` suffix is added. Blank CSV rows are skipped and do
+not consume a number.
 
 The CLI writes those same sheets as SVG (this repo does not rasterize PDF
 outside the browser):
 
 ```bash
-python mailmerge.py --template samples/avery-5520-label.svg --names samples/avery-5520.csv \
-  --mode fullsheet --out-dir labels --name-field medication \
-  --margin-top 12.7 --margin-bottom 12.7 \
-  --margin-left 4.7625 --margin-right 4.7625 \
-  --gap-x 3.175 --gap-y 0
+python mailmerge.py --template samples/single-label.svg --names samples/single-label.csv \
+  --mode fullsheet --out-dir labels --name-field label --sheet 5195
 ```
 
-That sample is US Letter (215.9 mm × 279.4 mm) with a 66.675 mm × 25.4 mm tile,
-which is the Avery 5520 die (1 in × 2⅝ in, 30-up). Print the SVG or the browser
-PDF at **100% / actual size**. The first label’s top-left sits at the left
-margin 4.7625 mm and top margin 12.7 mm; columns step by 69.85 mm and rows by
-25.4 mm. In the browser each PDF page is that same physical size and the sheet
-is drawn at 300 DPI so it fills the page.
+`--sheet 5520` and `--preset 5520` are the same flag. `--list-sheets` prints
+the library. Print at **100% / actual size**. Copies step by the sheet’s pitch
+(its label size plus the gap). The artwork keeps the template’s own size; if
+that size is more than 0.5&nbsp;mm off the sheet’s label size, the tool says so
+and does not scale it. A grid that runs off the page is still written, with a
+warning, rather than clipped.
 
-## Letter label sheets
+Loading a single-label template selects the first sheet whose label size matches
+within 0.5&nbsp;mm (preferring one that also matches the columns and rows
+already filled in). Editing a margin, gap, column, or row switches the list to
+**Custom** and keeps that page size; choosing **Custom** in the list drops the
+sheet and goes back to US Letter.
 
-Grid mode can register a tile to a die-cut Letter sheet. Size the template page
-to US Letter (215.9&nbsp;mm × 279.4&nbsp;mm, or 8.5&nbsp;in × 11&nbsp;in) and
-size the tile border to the label. Give that border no stroke
-(`stroke-width: 0`); a stroke is subtracted from the usable page and will shift
-the grid. Print the SVG at **100% / actual size** — do not scale to fit.
+## Avery sheets
 
-Millimetre values below are the usual inch die layouts converted with
-25.4&nbsp;mm/in. The single `--margin` / `--gap` flags still work; these
-examples need the per-side and per-axis overrides. In the browser, **Gap (mm)**
-and **Margin (mm)** copy into both axes and all four sides; edit **Gap X**,
-**Gap Y**, **Margin top**, **Margin bottom**, **Margin left**, or **Margin
-right** to override one of them.
+[`avery-sheets.js`](avery-sheets.js) is the built-in list of sheet formats.
+Units are **inches**. `mailmerge.py` reads the JSON array in that file; the
+browser loads the same file with a script tag, so opening `index.html` from a
+folder still works. If the file is missing, the list is empty and you can still
+type margins by hand.
 
-| Sheet | Grid | Label (tile border) | Margins (mm): top, right, bottom, left | Gaps (mm): X, Y |
-| --- | --- | --- | --- | --- |
-| Avery 5520 (same layout as 1&nbsp;in × 2⅝&nbsp;in, 30-up) | 3 × 10 | 66.675 × 25.4 | 12.7, 4.7625, 12.7, 4.7625 | 3.175, 0 |
-| Avery 5195 (1.75&nbsp;in × 0.666&nbsp;in, 60-up) | 4 × 15 | 44.45 × 16.9164 | 13.4874, 9.144, 12.1666, 7.5438 | 7.1374, 0 |
-| Avery 5523 (4&nbsp;in × 2&nbsp;in, 10-up) | 2 × 5 | 101.6 × 50.8 | 12.7, 4.318, 12.7, 4.318 | 4.064, 0 |
-
-5520 side margins are 0.1875&nbsp;in (often rounded to 0.188&nbsp;in) and the
-horizontal gutter is 0.125&nbsp;in; rows are flush (vertical pitch equals the
-1&nbsp;in label). 5195 is asymmetric: top 0.531&nbsp;in, right 0.36&nbsp;in,
-bottom 0.479&nbsp;in, left 0.297&nbsp;in, horizontal pitch 2.031&nbsp;in
-(gutter 0.281&nbsp;in), vertical pitch 0.666&nbsp;in. 5523 uses 0.5&nbsp;in
-top and bottom, 0.17&nbsp;in sides, and a 0.16&nbsp;in horizontal gutter.
+Pick a sheet instead of typing the die:
 
 ```bash
-# Avery 5520 on US Letter. The template tile must already be 66.675 mm x 25.4 mm.
-python mailmerge.py --template letter-label.svg --names names.csv --output labels.svg \
-  --margin-top 12.7 --margin-bottom 12.7 \
-  --margin-left 4.7625 --margin-right 4.7625 \
-  --gap-x 3.175 --gap-y 0
-
-# Avery 5195 — unequal left/right and top/bottom margins
-python mailmerge.py --template letter-label.svg --names names.csv --output labels.svg \
-  --margin-top 13.4874 --margin-bottom 12.1666 \
-  --margin-left 7.5438 --margin-right 9.144 \
-  --gap-x 7.1374 --gap-y 0
-
-# Avery 5523
-python mailmerge.py --template letter-label.svg --names names.csv --output labels.svg \
-  --margin-top 12.7 --margin-bottom 12.7 \
-  --margin-left 4.318 --margin-right 4.318 \
-  --gap-x 4.064 --gap-y 0
+python mailmerge.py --list-sheets
+python mailmerge.py --template samples/avery-5520-label.svg --names samples/avery-5520.csv \
+  --mode fullsheet --out-dir labels --name-field medication --sheet 5520
 ```
+
+In the browser the **Avery sheet** box is at the top of the layout settings and
+applies to grid mode and full-sheet mode. Search by product number or size
+(`5520`, `round`, `folder`). The option text looks like
+`5160/5260/5520/8160/8460 — 2-5/8" × 1" (30 per sheet)`. Numbers that share a
+die (5160 and 5520, 5163 and 5523, 5266 and 8366) are one entry.
+
+The formats were measured from Avery’s blank-template PDFs
+(`avery.com/templates/<number>`) on 2026-10-08. Each entry’s `source` field
+names that file. 5408 is a 4×6&nbsp;in sheet of 3/4&nbsp;in rounds, not Letter;
+6450 is the Letter sheet of 1&nbsp;in rounds. A 2-5/8&nbsp;in address label is
+drawn 2.63&nbsp;in wide on Avery’s current 5160/5520 template (pitch 2.75&nbsp;in).
+Artwork within 0.5&nbsp;mm of that still matches and is not rescaled.
+
+**Add a format.** Append an object to the array in `avery-sheets.js` with a
+unique `id`, every product number that should select it, the page and label
+size, columns, rows, four margins, two gaps, a `shape` of `rect`, `rounded`,
+or `round`, a short `sizeLabel` for the dropdown, and a `source` note. Then
+run `python -m unittest tests.test_fullsheet`. The fit test checks that
+margins, labels, and gaps add up to the page on both axes within 0.5&nbsp;mm.
+
+A tile template’s border should use `stroke-width: 0`. A stroke is subtracted
+from the usable page and will shift the grid. Print at **100% / actual size**.
+
+The shared **Gap (mm)** and **Margin (mm)** boxes still copy into both axes and
+all four sides. **Gap X**, **Gap Y**, and the four side margins override one of
+them, and doing so switches a chosen sheet to **Custom**. An explicit
+`--gap-x` or side margin does the same on the command line: it replaces only
+that one value from the sheet.
 
 ## Files
 
 - `template.svg` — grid template containing one tile with `{{...}}` placeholders.
 - `names.csv` — merge data; column headers match the template's placeholders.
-- `mailmerge.py` — the generator (grid + individual modes).
+- `mailmerge.py` — the generator (grid, full-sheet, and individual modes).
+- `avery-sheets.js` — built-in Avery sheet formats, shared by the CLI and the browser.
 - `index.html` — browser-based version of the generator (no install).
 - `output.svg` — generated grid (created when you run grid mode).
 - `samples/` — example templates: five grid shapes, a full-page certificate,
-  and an Avery 5520 letter label, each with a matching CSV.
+  an Avery 5520 letter label, and a generic single-label SVG, each with a CSV.
 - `tests/` — `python -m unittest tests.test_fullsheet` checks sheet alignment
   and that grid and individual output still match.
 
 ## Template requirements
 
-**Grid mode and full-sheet mode**
+**Grid mode**
 
 - The tile artwork must live in a group labelled `Nametag`, `Tile`, or `Cell`
   (`inkscape:label="Tile"`).
@@ -287,6 +302,12 @@ python mailmerge.py --template letter-label.svg --names names.csv --output label
 - The cut outline must be labelled `<tile-label> Border` (e.g.
   `inkscape:label="Tile Border"`); it may be a `rect`, `circle`, `ellipse`,
   `polygon`, or `polyline`, and its bounding box defines the tile size.
+
+**Full-sheet mode**
+
+- Either the same tile group as grid mode, on a page that is already the sheet, or
+- a single-label SVG: no tile group, and a root `<svg>` with a physical
+  `width` and `height` plus a `viewBox`. That file is copied into every cell.
 
 **Individual mode**
 

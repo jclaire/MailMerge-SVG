@@ -36,10 +36,11 @@
   input[type=file] { display: none; }
   .row { display: flex; gap: 10px; }
   .row .field { flex: 1; }
-  input[type=number] {
+  input[type=number], input[type=search] {
     width: 100%; background: var(--panel2); border: 1px solid var(--line); color: var(--text);
     border-radius: 8px; padding: 8px 10px; font-size: 14px;
   }
+  #averySheet { width: 100%; margin-top: 6px; }
   button {
     background: var(--accent2); color: #fff; border: none; border-radius: 8px; padding: 9px 14px;
     font-size: 14px; cursor: pointer; font-weight: 600;
@@ -58,7 +59,7 @@
           border-radius: 999px; padding: 1px 9px; font-size: 12px; margin: 2px 4px 2px 0; }
   .pill.ok { border-color: var(--ok); color: var(--ok); }
   .pill.warn { border-color: var(--warn); color: var(--warn); }
-  .msg { font-size: 13px; padding: 10px 12px; border-radius: 8px; margin-top: 10px; display: none; }
+  .msg { font-size: 13px; padding: 10px 12px; border-radius: 8px; margin-top: 10px; display: none; white-space: pre-wrap; }
   .msg.err { display: block; background: rgba(224,106,106,.12); border: 1px solid var(--err); color: #ffb3b3; }
   .msg.warn { display: block; background: rgba(224,169,63,.12); border: 1px solid var(--warn); color: #ffd98a; }
   .msg.hint { display: block; background: var(--panel2); border: 1px solid var(--line); color: var(--muted); }
@@ -81,7 +82,7 @@
   .sheet {
     background: #fff; box-shadow: 0 6px 24px rgba(0,0,0,.4); margin: auto; width: 100%;
   }
-  .sheet svg { display: block; width: 100%; height: 100%; }
+  .sheet > svg { display: block; width: 100%; height: 100%; }
   .stage > .empty { margin: auto; }
   .empty { color: var(--muted); font-size: 14px; text-align: center; }
   .zoomctl { display: flex; align-items: center; gap: 6px; }
@@ -159,6 +160,22 @@
     </div>
 
     <div id="gridOpts">
+      <div class="field" id="sheetField">
+        <label for="sheetSearch">Avery sheet</label>
+        <input type="search" id="sheetSearch" placeholder="Search 5520, address, round…" autocomplete="off">
+        <select id="averySheet"></select>
+        <p class="hint-note" id="sheetHint">Pick the sheet you will print on. Margins, gaps, columns and rows fill in from that layout. Editing any of them switches this to Custom and keeps the page size; choose Custom in the list to drop the sheet.</p>
+      </div>
+      <div class="row">
+        <div class="field">
+          <label for="cols">Columns</label>
+          <input type="number" id="cols" min="1" step="1" placeholder="auto">
+        </div>
+        <div class="field">
+          <label for="rows">Rows</label>
+          <input type="number" id="rows" min="1" step="1" placeholder="auto">
+        </div>
+      </div>
       <div class="row">
         <div class="field">
           <label for="gap">Gap (mm)</label>
@@ -259,8 +276,11 @@
   </div>
 </main>
 <footer>
-  Tip: for <strong>grid</strong> and <strong>one full sheet per label</strong> the template needs a tile group labelled <code>inkscape:label="Nametag"</code>
-  (or <code>Tile</code>/<code>Cell</code>) with a cut outline labelled <code>Border</code> (or <code>Nametag Border</code>). Full-sheet mode fills every cell with one row and downloads a PDF per row (or all of them as a zip). For
+  Tip: <strong>one full sheet per label</strong> accepts a single-label SVG (the root
+  <code>&lt;svg&gt;</code> is the label, with a physical width and height) or a tile group labelled
+  <code>inkscape:label="Nametag"</code> (or <code>Tile</code>/<code>Cell</code>) with a cut outline labelled
+  <code>Border</code>. Choose an Avery sheet above the margins and every cell is a copy of that row.
+  Grid mode still needs the tile group. For
   <strong>individual</strong> mode any whole-page SVG works. Either way, put <code>{{TOKEN}}</code> placeholders in the
   artwork and CSV column names are matched to them automatically. For certificates, add a hidden Inkscape layer labelled
   <code>Backdrop</code> (e.g. an image of the pre-printed stock) to preview alignment — it's shown only on screen, never in downloads.
@@ -268,6 +288,7 @@
   Host this file free on GitHub Pages, a gist (via htmlpreview), or anywhere static. Print sheets at 100% / actual size.
 </footer>
 
+<script src="avery-sheets.js"></script>
 <script>
 "use strict";
 
@@ -508,15 +529,16 @@ function generate(svgText, csvText, opts) {
   const mode = opts.mode || "auto";
   const tile = findTileGroup(svgText);
   const resolved = mode === "auto" ? (tile ? "grid" : "individual") : mode;
-  if (resolved === "grid" || resolved === "fullsheet") {
+  if (resolved === "grid") {
     if (!tile)
-      throw new Error((resolved === "fullsheet" ? "One full sheet per label" : "Grid mode") +
-                      " needs a repeating tile group labelled one of " +
+      throw new Error("Grid mode needs a repeating tile group labelled one of " +
                       TILE_LABELS.join(", ") + ' (e.g. inkscape:label="Nametag"). ' +
-                      "Use individual mode for whole-page templates.");
-    return resolved === "fullsheet"
-      ? generateFullSheet(svgText, tile, csvText, opts)
-      : generateGrid(svgText, tile, csvText, opts);
+                      "A single-label SVG can be printed with One full sheet per label.");
+    return generateGrid(svgText, tile, csvText, opts);
+  }
+  if (resolved === "fullsheet") {
+    if (!tile) return generateLabelSheets(svgText, csvText, opts);
+    return generateFullSheet(svgText, tile, csvText, opts);
   }
   return generateIndividual(svgText, csvText, opts);
 }
@@ -548,11 +570,26 @@ function prepareGrid(svgText, tile, opts) {
     marginBottom: spacingMm.marginBottom * scale, marginLeft: spacingMm.marginLeft * scale,
   };
   const grid = computeGrid(vbW, vbH, tagW, tagH, stroke, spacing.gapX, spacing.marginTop, spacing);
+  let cols = grid.cols, rows = grid.rows;
+  if (opts.columns != null && opts.columns !== "") cols = positiveCount(opts.columns, "Columns");
+  if (opts.rows != null && opts.rows !== "") rows = positiveCount(opts.rows, "Rows");
   const mmPerUu = uuPerMm ? 1 / uuPerMm : null;
+  const warnings = [];
+  const overflow = overflowWarning(
+    vbW, vbH, grid.spacing.marginLeft, grid.spacing.marginTop,
+    grid.pitchX, grid.pitchY, tagW, tagH, cols, rows, uuPerMm);
+  if (overflow) warnings.push(overflow);
+  if (opts.sheetLabelWidthMm != null && opts.sheetLabelHeightMm != null && mmPerUu != null) {
+    const mismatch = sizeMismatchWarning(
+      [tagW * mmPerUu, tagH * mmPerUu],
+      [opts.sheetLabelWidthMm, opts.sheetLabelHeightMm],
+      opts.sheetName);
+    if (mismatch) warnings.push(mismatch);
+  }
   return {
-    prefix, suffix, nametagXml, tokens, spacingMm,
-    cols: grid.cols, rows: grid.rows, pitchX: grid.pitchX, pitchY: grid.pitchY,
-    placed: grid.spacing, perPage: grid.cols * grid.rows,
+    prefix, suffix, nametagXml, tokens, spacingMm, warnings,
+    cols, rows, pitchX: grid.pitchX, pitchY: grid.pitchY,
+    placed: grid.spacing, perPage: cols * rows,
     vbW, vbH, tagW, tagH,
     tagSizeIn: mmPerUu ? [tagW * mmPerUu / 25.4, tagH * mmPerUu / 25.4] : null,
     pageSizeIn: mmPerUu ? [vbW * mmPerUu / 25.4, vbH * mmPerUu / 25.4] : null,
@@ -604,7 +641,7 @@ function generateGrid(svgText, tile, csvText, opts) {
     });
   }
 
-  return Object.assign({ mode: "grid" }, gridResult(
+  return Object.assign({ mode: "grid", warnings: prep.warnings }, gridResult(
     prep, templateFields, matched, unmatched, fields, items, dataRows.length));
 }
 
@@ -647,7 +684,199 @@ function generateFullSheet(svgText, tile, csvText, opts) {
     mode: "fullsheet",
     nameField: nameFields.join(","),
     nameFields,
+    warnings: prep.warnings,
   }, gridResult(prep, templateFields, matched, unmatched, fields, items, dataRows.length));
+}
+
+const LETTER_WIDTH_MM = 8.5 * 25.4;
+const LETTER_HEIGHT_MM = 11 * 25.4;
+const SIZE_TOLERANCE_MM = 0.5;
+
+function lengthMm(value) {
+  const [number, unit] = parseLength(value);
+  if (number == null) return null;
+  const factor = UNIT_TO_MM[unit];
+  if (factor == null) return null;
+  return number * factor;
+}
+function splitRootSvg(svgText) {
+  const start = svgText.indexOf("<svg");
+  if (start < 0) throw new Error("Template has no <svg> element.");
+  const openEnd = svgText.indexOf(">", start);
+  if (openEnd < 0) throw new Error("Template <svg> tag is not closed.");
+  const close = svgText.lastIndexOf("</svg>");
+  if (close < openEnd) throw new Error("Template <svg> element is not closed.");
+  return { openTag: svgText.slice(start, openEnd + 1), inner: svgText.slice(openEnd + 1, close) };
+}
+function xmlnsDecl(openTag) {
+  const found = openTag.match(/xmlns(?::[\w.-]+)?="[^"]*"/g) || [];
+  if (!found.some((item) => item.startsWith("xmlns=")))
+    found.unshift('xmlns="http://www.w3.org/2000/svg"');
+  return found.join(" ");
+}
+function uniquifyIds(xml, index) {
+  xml = xml.replace(/(\s)id="([^"]*)"/g, (m, sp, id) => sp + 'id="' + id + "__" + index + '"');
+  xml = xml.replace(/url\(#([^)]+)\)/g, (m, id) => "url(#" + id.trim() + "__" + index + ")");
+  xml = xml.replace(/((?:xlink:)?href="#)([^"]+)(")/g, (m, a, id, b) => a + id + "__" + index + b);
+  return xml;
+}
+function formatSizeMm(w, h) {
+  return (w / 25.4).toFixed(3) + " in × " + (h / 25.4).toFixed(3) + " in (" +
+         w.toFixed(2) + " mm × " + h.toFixed(2) + " mm)";
+}
+function sizeMismatchWarning(templateMm, sheetMm, sheetName) {
+  if (!templateMm || !sheetMm) return null;
+  if (Math.abs(templateMm[0] - sheetMm[0]) <= SIZE_TOLERANCE_MM &&
+      Math.abs(templateMm[1] - sheetMm[1]) <= SIZE_TOLERANCE_MM) return null;
+  return "The template label is " + formatSizeMm(templateMm[0], templateMm[1]) +
+         " but " + (sheetName || "the chosen sheet") + " is " +
+         formatSizeMm(sheetMm[0], sheetMm[1]) + ". The artwork was not scaled.";
+}
+function overflowWarning(pageW, pageH, originX, originY, pitchX, pitchY, labelW, labelH, cols, rows, uuPerMm) {
+  const farX = originX + (cols - 1) * pitchX + labelW;
+  const farY = originY + (rows - 1) * pitchY + labelH;
+  let overX, overY, tol, pageTxt, reach;
+  if (uuPerMm) {
+    const mmPerUu = 1 / uuPerMm;
+    overX = (farX - pageW) * mmPerUu;
+    overY = (farY - pageH) * mmPerUu;
+    tol = SIZE_TOLERANCE_MM;
+    pageTxt = (pageW * mmPerUu).toFixed(1) + " mm × " + (pageH * mmPerUu).toFixed(1) + " mm";
+    reach = (farX * mmPerUu).toFixed(1) + " mm × " + (farY * mmPerUu).toFixed(1) + " mm";
+  } else {
+    overX = farX - pageW;
+    overY = farY - pageH;
+    tol = 1e-3;
+    pageTxt = pageW + " × " + pageH + " user units";
+    reach = farX + " × " + farY + " user units";
+  }
+  if (overX > tol || overY > tol)
+    return "This layout extends past the page (content reaches " + reach + " on a " + pageTxt +
+           " sheet). Nothing was clipped; check the sheet, the label size, or the margins.";
+  return null;
+}
+function positiveCount(value, name) {
+  if (value == null || value === "") return null;
+  const count = Number(value);
+  if (!Number.isFinite(count) || Math.floor(count) !== count)
+    throw new Error(name + " must be a whole number.");
+  if (count < 1) throw new Error(name + " must be at least 1.");
+  return count;
+}
+function viewBoxNumbers(viewBox) {
+  const parts = (viewBox || "").replace(/,/g, " ").trim().split(/\s+/);
+  if (parts.length !== 4) throw new Error("Unexpected viewBox value: " + viewBox);
+  return parts.map(Number);
+}
+function labelCell(inner, tokens, row, index, tx, ty, labelW, labelH, viewBox, missing) {
+  let body = inner;
+  for (const [raw, field] of tokens) {
+    let value;
+    if (Object.prototype.hasOwnProperty.call(row, field)) value = row[field];
+    else { missing.add(field); value = ""; }
+    body = body.split(raw).join(xmlEscape(value));
+  }
+  body = uniquifyIds(body, index);
+  const [vbX, vbY, vbW, vbH] = viewBoxNumbers(viewBox);
+  if (!vbW || !vbH) throw new Error("This template's viewBox has no area, so the label cannot be placed.");
+  const sx = labelW / vbW, sy = labelH / vbH;
+  return '<g id="label-' + index + '" transform="translate(' + fmt(tx - vbX * sx) + "," +
+         fmt(ty - vbY * sy) + ") scale(" + fmt(sx) + "," + fmt(sy) + ')">' + body + "</g>";
+}
+function composeLabelPage(pageW, pageH, body, xmlns) {
+  return '<?xml version="1.0" encoding="UTF-8"?>\n' +
+         "<svg " + xmlns + ' width="' + fmt(pageW) + 'mm" height="' + fmt(pageH) +
+         'mm" viewBox="0 0 ' + fmt(pageW) + " " + fmt(pageH) + '">\n' +
+         body + "\n</svg>\n";
+}
+function generateLabelSheets(svgText, csvText, opts) {
+  opts = opts || {};
+  const { openTag, inner } = splitRootSvg(svgText);
+  const labelW = lengthMm(getAttr(openTag, "width"));
+  const labelH = lengthMm(getAttr(openTag, "height"));
+  if (labelW == null || labelH == null || labelW <= 0 || labelH <= 0)
+    throw new Error("This template has no repeating tile group, and its root <svg> has no " +
+                    "physical width and height (such as 1.75in and 0.66in). Add those, or " +
+                    "draw the label as a tile group labelled Nametag, Tile, or Cell.");
+  const viewBox = getAttr(openTag, "viewBox");
+  if (!viewBox)
+    throw new Error("This template's root <svg> has no viewBox, so the label cannot be placed on a sheet.");
+  const tokens = detectPlaceholders(inner);
+  if (tokens.size === 0)
+    throw new Error("No {{placeholder}} tokens found in the template. Add at least one, e.g. {{LABEL}}.");
+
+  const pageW = opts.pageWidthMm == null ? LETTER_WIDTH_MM : opts.pageWidthMm;
+  const pageH = opts.pageHeightMm == null ? LETTER_HEIGHT_MM : opts.pageHeightMm;
+  const gapMm = optNum(opts.gapMm, 2), marginMm = optNum(opts.marginMm, 0);
+  const spacing = resolveSpacing(gapMm, marginMm, {
+    gapX: opts.gapXMm, gapY: opts.gapYMm,
+    marginTop: opts.marginTopMm, marginRight: opts.marginRightMm,
+    marginBottom: opts.marginBottomMm, marginLeft: opts.marginLeftMm,
+  });
+  let pitchLabelW = labelW, pitchLabelH = labelH;
+  if (opts.sheetLabelWidthMm != null && opts.sheetLabelHeightMm != null) {
+    pitchLabelW = opts.sheetLabelWidthMm;
+    pitchLabelH = opts.sheetLabelHeightMm;
+  }
+  const pitchX = pitchLabelW + spacing.gapX;
+  const pitchY = pitchLabelH + spacing.gapY;
+  const fit = computeGrid(pageW, pageH, pitchLabelW, pitchLabelH, 0, spacing.gapX, spacing.marginTop, spacing);
+  const cols = opts.columns != null && opts.columns !== "" ? positiveCount(opts.columns, "Columns") : fit.cols;
+  const rows = opts.rows != null && opts.rows !== "" ? positiveCount(opts.rows, "Rows") : fit.rows;
+  const warnings = [];
+  const overflow = overflowWarning(
+    pageW, pageH, spacing.marginLeft, spacing.marginTop,
+    pitchX, pitchY, labelW, labelH, cols, rows, 1);
+  if (overflow) warnings.push(overflow);
+  const mismatch = sizeMismatchWarning(
+    [labelW, labelH],
+    (opts.sheetLabelWidthMm != null && opts.sheetLabelHeightMm != null)
+      ? [opts.sheetLabelWidthMm, opts.sheetLabelHeightMm] : null,
+    opts.sheetName);
+  if (mismatch) warnings.push(mismatch);
+
+  const { fields, rows: dataRows } = parseCSV(csvText);
+  if (!dataRows.length) throw new Error("No data rows found in the CSV.");
+  const { templateFields, matched, unmatched, headerSet } = matchFields(tokens, fields);
+  if (!matched.length)
+    throw new Error("CSV columns [" + fields.join(", ") + "] do not match any template field [" +
+                    templateFields.join(", ") + "].");
+  const nameFields = resolveNameFields(opts.nameField, matched, headerSet);
+  const xmlns = xmlnsDecl(openTag);
+  const perPage = cols * rows;
+  const missing = new Set();
+  const used = new Set();
+  const items = [];
+  dataRows.forEach((row, i) => {
+    const parts = [];
+    for (let n = 0; n < perPage; n++) {
+      const col = n % cols, gridRow = Math.floor(n / cols);
+      const tx = spacing.marginLeft + col * pitchX;
+      const ty = spacing.marginTop + gridRow * pitchY;
+      parts.push(labelCell(inner, tokens, row, n, tx, ty, labelW, labelH, viewBox, missing));
+    }
+    const base = fullsheetBasename(row, nameFields, i, dataRows.length);
+    const name = uniqueName(base, used);
+    items.push({
+      name: name + ".pdf",
+      svg: composeLabelPage(pageW, pageH, parts.join("\n"), xmlns),
+      label: name,
+      count: perPage,
+    });
+  });
+  return {
+    mode: "fullsheet",
+    nameField: nameFields.join(","),
+    nameFields,
+    warnings,
+    items, sheets: items,
+    fields: templateFields, matched, unmatched: [...unmatched].sort(), csvColumns: fields,
+    grid: { cols, rows }, perPage, records: dataRows.length,
+    tagSizeIn: [labelW / 25.4, labelH / 25.4],
+    pageSizeIn: [pageW / 25.4, pageH / 25.4],
+    tagSizeUu: [labelW, labelH], pageSizeUu: [pageW, pageH],
+    spacingMm: spacing,
+  };
 }
 
 function generateIndividual(svgText, csvText, opts) {
@@ -743,7 +972,7 @@ Bob Johnson,Scribe`;
 
 /* ---------------- UI wiring ------------------------------------------------ */
 
-const state = { tpl: null, data: { columns: [], rows: [] }, result: null, current: 0, showBackdrop: true, zoom: 1, exporting: false };
+const state = { tpl: null, data: { columns: [], rows: [] }, result: null, current: 0, showBackdrop: true, zoom: 1, exporting: false, sheetGeom: null, applyingSheet: false };
 const $ = (id) => document.getElementById(id);
 
 function wireDrop(dropId, inputId, onLoad, nameId) {
@@ -1157,10 +1386,11 @@ function regenerate() {
   updateModeUI(res.mode);
   setDownloadLabels(res.mode);
   if (res.mode === "individual" || res.mode === "fullsheet") populateNameField(res);
+  const notes = [];
   if (res.unmatched.length)
-    showMessage("warn", "Template fields with no data column (left blank): " + res.unmatched.join(", "));
-  else
-    showMessage("", "");
+    notes.push("Template fields with no data column (left blank): " + res.unmatched.join(", "));
+  (res.warnings || []).forEach((warning) => notes.push(warning));
+  showMessage(notes.length ? "warn" : "", notes.join("\n"));
   renderInfo(res);
   renderItemSelect(res);
   renderPreview();
@@ -1574,17 +1804,77 @@ function downloadAll() {
   triggerDownload(blob, zipName);
 }
 
-wireDrop("tplDrop", "tplInput", (t) => { state.tpl = t; maybeInitColumnsFromTemplate(); }, "tplName");
+wireDrop("tplDrop", "tplInput", (t) => { state.tpl = t; maybeInitColumnsFromTemplate(); autoSelectSheet(t); }, "tplName");
 wireDrop("csvDrop", "csvInput", (t) => { loadCsvIntoModel(t); }, "csvName");
 function numOrBlank(raw, fallback) {
   if (raw == null || String(raw).trim() === "") return fallback;
   const n = Number(raw);
   return Number.isFinite(n) ? n : fallback;
 }
+function sheetCatalog() {
+  return (typeof AVERY_SHEETS === "undefined" || !AVERY_SHEETS) ? [] : AVERY_SHEETS;
+}
+function sheetById(id) {
+  return sheetCatalog().find((sheet) => sheet.id === id) || null;
+}
+function sheetOptionLabel(sheet) {
+  const count = sheet.columns * sheet.rows;
+  const where = (sheet.pageWidthIn === 8.5 && sheet.pageHeightIn === 11)
+    ? count + " per sheet"
+    : count + " per " + sheet.pageWidthIn + "×" + sheet.pageHeightIn + " in sheet";
+  return sheet.products.join("/") + " — " + sheet.sizeLabel + " (" + where + ")";
+}
+function sheetMatchesQuery(sheet, query) {
+  if (!query) return true;
+  const blob = (sheet.products.join(" ") + " " + sheet.name + " " + sheet.description + " " +
+                sheet.sizeLabel + " " + sheet.id).toLowerCase();
+  return blob.includes(query);
+}
+function renderSheetOptions(query) {
+  const sel = $("averySheet");
+  const current = sel.value;
+  const q = (query || "").trim().toLowerCase();
+  const options = ['<option value="">Custom</option>'];
+  sheetCatalog().forEach((sheet) => {
+    if (!sheetMatchesQuery(sheet, q)) return;
+    options.push('<option value="' + sheet.id + '">' + sheetOptionLabel(sheet) + "</option>");
+  });
+  sel.innerHTML = options.join("");
+  if ([...sel.options].some((opt) => opt.value === current)) sel.value = current;
+}
+function inchesToMm(value) { return value * 25.4; }
+function mmInput(inches) {
+  const n = inchesToMm(inches);
+  return String(Math.round(n * 1e6) / 1e6);
+}
+function spacingFromSheet(sheet) {
+  return {
+    gapMm: 0, marginMm: 0,
+    gapXMm: inchesToMm(sheet.gapXIn), gapYMm: inchesToMm(sheet.gapYIn),
+    marginTopMm: inchesToMm(sheet.marginTopIn), marginRightMm: inchesToMm(sheet.marginRightIn),
+    marginBottomMm: inchesToMm(sheet.marginBottomIn), marginLeftMm: inchesToMm(sheet.marginLeftIn),
+    columns: sheet.columns, rows: sheet.rows,
+    pageWidthMm: inchesToMm(sheet.pageWidthIn), pageHeightMm: inchesToMm(sheet.pageHeightIn),
+    sheetLabelWidthMm: inchesToMm(sheet.labelWidthIn), sheetLabelHeightMm: inchesToMm(sheet.labelHeightIn),
+    sheetName: "Avery " + sheet.products.join("/"),
+  };
+}
+function geomFromSheet(sheet) {
+  return {
+    pageWidthMm: inchesToMm(sheet.pageWidthIn), pageHeightMm: inchesToMm(sheet.pageHeightIn),
+    labelWidthMm: inchesToMm(sheet.labelWidthIn), labelHeightMm: inchesToMm(sheet.labelHeightIn),
+    name: "Avery " + sheet.products.join("/"),
+  };
+}
 function readSpacing() {
+  const chosen = sheetById($("averySheet").value);
+  if (chosen) {
+    state.sheetGeom = geomFromSheet(chosen);
+    return spacingFromSheet(chosen);
+  }
   const gapMm = numOrBlank($("gap").value, 2);
   const marginMm = numOrBlank($("margin").value, 0);
-  return {
+  const spacing = {
     gapMm, marginMm,
     gapXMm: numOrBlank($("gapX").value, gapMm),
     gapYMm: numOrBlank($("gapY").value, gapMm),
@@ -1592,7 +1882,74 @@ function readSpacing() {
     marginBottomMm: numOrBlank($("marginBottom").value, marginMm),
     marginLeftMm: numOrBlank($("marginLeft").value, marginMm),
     marginRightMm: numOrBlank($("marginRight").value, marginMm),
+    columns: $("cols").value.trim() === "" ? null : Number($("cols").value),
+    rows: $("rows").value.trim() === "" ? null : Number($("rows").value),
+    pageWidthMm: null, pageHeightMm: null,
+    sheetLabelWidthMm: null, sheetLabelHeightMm: null, sheetName: null,
   };
+  if (state.sheetGeom) {
+    spacing.pageWidthMm = state.sheetGeom.pageWidthMm;
+    spacing.pageHeightMm = state.sheetGeom.pageHeightMm;
+    spacing.sheetLabelWidthMm = state.sheetGeom.labelWidthMm;
+    spacing.sheetLabelHeightMm = state.sheetGeom.labelHeightMm;
+    spacing.sheetName = state.sheetGeom.name;
+  }
+  return spacing;
+}
+function applySheet(sheet) {
+  state.applyingSheet = true;
+  state.sheetGeom = geomFromSheet(sheet);
+  $("averySheet").value = sheet.id;
+  $("gapX").value = mmInput(sheet.gapXIn);
+  $("gapY").value = mmInput(sheet.gapYIn);
+  $("marginTop").value = mmInput(sheet.marginTopIn);
+  $("marginRight").value = mmInput(sheet.marginRightIn);
+  $("marginBottom").value = mmInput(sheet.marginBottomIn);
+  $("marginLeft").value = mmInput(sheet.marginLeftIn);
+  $("cols").value = String(sheet.columns);
+  $("rows").value = String(sheet.rows);
+  const gaps = [sheet.gapXIn, sheet.gapYIn];
+  $("gap").value = gaps[0] === gaps[1] ? mmInput(gaps[0]) : "";
+  const sides = [sheet.marginTopIn, sheet.marginRightIn, sheet.marginBottomIn, sheet.marginLeftIn];
+  $("margin").value = sides.every((v) => v === sides[0]) ? mmInput(sides[0]) : "";
+  state.applyingSheet = false;
+  regenerate();
+}
+function markSheetCustom() {
+  if (state.applyingSheet) return;
+  if ($("averySheet").value) {
+    $("averySheet").value = "";
+    $("sheetSearch").value = "";
+  }
+}
+function templateLabelMm(svgText) {
+  if (!svgText || findTileGroup(svgText)) return null;
+  try {
+    const { openTag } = splitRootSvg(svgText);
+    const w = lengthMm(getAttr(openTag, "width"));
+    const h = lengthMm(getAttr(openTag, "height"));
+    if (w == null || h == null) return null;
+    return [w, h];
+  } catch (e) {
+    return null;
+  }
+}
+function autoSelectSheet(svgText) {
+  const size = templateLabelMm(svgText);
+  if (!size) return;
+  const matches = sheetCatalog().filter((sheet) =>
+    Math.abs(size[0] - inchesToMm(sheet.labelWidthIn)) <= SIZE_TOLERANCE_MM &&
+    Math.abs(size[1] - inchesToMm(sheet.labelHeightIn)) <= SIZE_TOLERANCE_MM);
+  if (!matches.length) return;
+  let pick = matches[0];
+  const cols = Number($("cols").value), rows = Number($("rows").value);
+  if (cols && rows) {
+    const better = matches.find((sheet) => sheet.columns === cols && sheet.rows === rows);
+    if (better) pick = better;
+  }
+  $("sheetSearch").value = "";
+  renderSheetOptions("");
+  applySheet(pick);
 }
 function fmtMm(n) {
   const rounded = Math.round(n * 10000) / 10000;
@@ -1621,10 +1978,30 @@ function syncMarginSides() {
   $("marginBottom").value = v;
   $("marginLeft").value = v;
 }
-$("gap").addEventListener("input", () => { syncGapAxes(); regenerate(); });
-$("margin").addEventListener("input", () => { syncMarginSides(); regenerate(); });
-["gapX", "gapY", "marginTop", "marginRight", "marginBottom", "marginLeft"].forEach((id) => {
-  $(id).addEventListener("input", regenerate);
+$("gap").addEventListener("input", () => { markSheetCustom(); syncGapAxes(); regenerate(); });
+$("margin").addEventListener("input", () => { markSheetCustom(); syncMarginSides(); regenerate(); });
+["gapX", "gapY", "marginTop", "marginRight", "marginBottom", "marginLeft", "cols", "rows"].forEach((id) => {
+  $(id).addEventListener("input", () => { markSheetCustom(); regenerate(); });
+});
+$("sheetSearch").addEventListener("input", () => { renderSheetOptions($("sheetSearch").value); });
+$("sheetSearch").addEventListener("keydown", (e) => {
+  if (e.key !== "Enter") return;
+  e.preventDefault();
+  const choices = [...$("averySheet").options].filter((opt) => opt.value);
+  if (choices.length === 1) {
+    $("averySheet").value = choices[0].value;
+    $("averySheet").dispatchEvent(new Event("change"));
+  }
+});
+$("averySheet").addEventListener("change", () => {
+  const sheet = sheetById($("averySheet").value);
+  if (!sheet) {
+    state.sheetGeom = null;
+    $("sheetSearch").value = "";
+    regenerate();
+    return;
+  }
+  applySheet(sheet);
 });
 $("mode").addEventListener("change", () => { updateModeUI(effectiveMode()); regenerate(); });
 $("nameField").addEventListener("change", regenerate);
@@ -1658,6 +2035,17 @@ $("addRowBtn").addEventListener("click", addRow);
 $("useTplFieldsBtn").addEventListener("click", useTemplateFields);
 $("clearRowsBtn").addEventListener("click", clearRows);
 $("exampleBtn").addEventListener("click", () => {
+  state.sheetGeom = null;
+  state.applyingSheet = true;
+  $("averySheet").value = "";
+  $("sheetSearch").value = "";
+  $("cols").value = "";
+  $("rows").value = "";
+  $("gap").value = "2";
+  $("margin").value = "0";
+  syncGapAxes();
+  syncMarginSides();
+  state.applyingSheet = false;
   if ($("mode").value === "individual") {
     state.tpl = EXAMPLE_CERT_SVG; loadCsvIntoModel(EXAMPLE_CERT_CSV);
     $("tplName").textContent = "example-certificate.svg";
@@ -1669,6 +2057,7 @@ $("exampleBtn").addEventListener("click", () => {
   }
   run();
 });
+renderSheetOptions("");
 updateModeUI(effectiveMode());
 updateBackdropUI();
 renderDataEditor();
