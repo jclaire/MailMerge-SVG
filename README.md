@@ -67,6 +67,30 @@ pick the mode, preview the result, and download a single file or all of them as 
 The web app and the Python CLI share identical merge logic and produce
 byte-for-byte identical output.
 
+### Edit a template in the browser
+
+With a template loaded, **Edit template** opens it in an embedded
+[SVG-Edit](https://github.com/svg-edit/svgedit) 7.4.2 editor (MIT; bundled
+component licenses are listed in
+[`vendor/svgedit/licenseInfo.json`](vendor/svgedit/licenseInfo.json)). Move,
+resize, and recolor shapes and text, then **Apply** to use the result for the
+merge, or **Download SVG** to save it. **Cancel** discards the session. Nothing
+is uploaded.
+
+Merge fields are ordinary text (`{{NAME}}`, `{{ROLE}}`, …). They survive the
+editor as long as that text is left in place and is not converted to paths.
+Grid tiles and the certificate backdrop are found by `inkscape:label`. SVG-Edit
+drops Inkscape attributes, so the app copies each label to a `data-mm-*`
+attribute before editing and writes `inkscape:label` back when you apply or
+download. The original page `width`, `height`, and `viewBox` are restored when
+the document size did not change, so sheet margins and gaps stay in real
+millimetres.
+
+The editor ships in [`vendor/svgedit/`](vendor/svgedit/) and runs entirely in
+the browser, including on GitHub Pages. Serve the folder over HTTP
+(`python -m http.server`, or the Pages site). Opening `index.html` as a local
+file still runs the merge; the editor's modules need a web server.
+
 ## How it works
 
 1. Reads the template and looks for a repeating **tile group** (the `<g>` whose
@@ -221,7 +245,9 @@ python mailmerge.py --template letter-label.svg --names names.csv --output label
 - `template.svg` — grid template containing one tile with `{{...}}` placeholders.
 - `names.csv` — merge data; column headers match the template's placeholders.
 - `mailmerge.py` — the generator (grid + individual modes).
-- `index.html` — browser-based version of the generator (no install).
+- `index.html` — browser-based version of the generator (no install), including the template editor.
+- `editor/preserve-fields.js` — keeps `{{TOKEN}}` fields and `inkscape:label` markers through the editor.
+- `vendor/svgedit/` — SVG-Edit 7.4.2, used by **Edit template**.
 - `output.svg` — generated grid (created when you run grid mode).
 - `samples/` — example templates: five grid shapes and a full-page certificate,
   each with a matching CSV.

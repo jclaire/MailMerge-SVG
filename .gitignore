@@ -12,6 +12,9 @@ build/
 develop-eggs/
 dist/
 downloads/
+# The dist/ rule above also matches the vendored SVG-Edit browser build.
+!vendor/svgedit/dist/
+!vendor/svgedit/dist/**
 eggs/
 .eggs/
 lib/
